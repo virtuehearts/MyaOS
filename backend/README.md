@@ -56,6 +56,38 @@ Response:
 - `POST /memory/import/json`
 - `POST /memory/import/xml`
 
+### External Lookup (OpenRouter)
+- `POST /lookup`
+- `GET /lookup/logs`
+
+Request body:
+```json
+{
+  "query": "What is the capital of France?",
+  "model": "openai/gpt-3.5-turbo",
+  "temperature": 0.2,
+  "max_tokens": 128,
+  "memory": {
+    "store": false,
+    "tags": ["reference"],
+    "source_tags": ["external"],
+    "virtue_markers": {},
+    "salience": 0.5
+  }
+}
+```
+
+Response:
+```json
+{
+  "lookup_id": "0f7e9c6a5c1e4a9fb5fe0cb8c2c5ad76",
+  "model": "openai/gpt-3.5-turbo",
+  "response": "I have looked this information up. Paris is the capital of France.",
+  "raw_response": "Paris is the capital of France.",
+  "memory_id": null
+}
+```
+
 Request body:
 ```json
 {
