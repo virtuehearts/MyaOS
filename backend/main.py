@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import ast
 import hashlib
 import json
 import os
@@ -157,6 +158,61 @@ class LookupLogResponse(BaseModel):
     logs: List[LookupLogRecord]
 
 
+class AppRegistryItem(BaseModel):
+    id: str
+    name: str
+    description: str
+    icon: str
+    endpoint: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    timestamp: datetime
+
+
+class CalculatorRequest(BaseModel):
+    expression: str
+
+
+class CalculatorResponse(BaseModel):
+    expression: str
+    result: float
+
+
+class ImageEditorRequest(BaseModel):
+    asset: str
+    action: str
+
+
+class ImageEditorResponse(BaseModel):
+    status: str
+    pipeline: List[str]
+
+
+class CalendarEvent(BaseModel):
+    id: str
+    title: str
+    time: str
+    location: str
+
+
+class CalendarResponse(BaseModel):
+    events: List[CalendarEvent]
+
+
+class SSHRequest(BaseModel):
+    command: str
+
+
+class SSHResponse(BaseModel):
+    output: str
+
+
 MEMORY_STORE: Dict[str, MemoryRecord] = {}
 VECTOR_INDEX: Optional[FAISS] = None
 LOOKUP_LOGS: List[LookupLogRecord] = []
@@ -168,6 +224,44 @@ OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "MyaOS")
 LOOKUP_AUDIT_LOG_PATH = os.getenv("LOOKUP_AUDIT_LOG_PATH", "lookup_audit.log")
 LOOKED_UP_MARKER = "[LOOKED_UP]"
 EXTERNAL_LOOKUP_SOURCE_TAG = "external-lookup"
+
+APP_REGISTRY = [
+    {
+        "id": "chat",
+        "name": "Chat",
+        "description": "Conversational co-pilot for MyaOS sessions.",
+        "icon": "💬",
+        "endpoint": "/apps/chat",
+    },
+    {
+        "id": "calculator",
+        "name": "Calculator",
+        "description": "Scientific expressions & quick math checks.",
+        "icon": "🧮",
+        "endpoint": "/apps/calculator",
+    },
+    {
+        "id": "image-editor",
+        "name": "Image Editor",
+        "description": "Queue edits for creative assets.",
+        "icon": "🖼️",
+        "endpoint": "/apps/image-editor",
+    },
+    {
+        "id": "calendar",
+        "name": "Calendar",
+        "description": "Upcoming schedule and reminders.",
+        "icon": "📅",
+        "endpoint": "/apps/calendar",
+    },
+    {
+        "id": "ssh",
+        "name": "SSH Console",
+        "description": "Issue remote commands via secure shell.",
+        "icon": "🖥️",
+        "endpoint": "/apps/ssh",
+    },
+]
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -194,6 +288,33 @@ EMBEDDINGS = DeterministicEmbeddings()
 
 def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
     return max(min_value, min(max_value, value))
+
+
+_ALLOWED_AST_NODES = (
+    ast.Expression,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.Constant,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.Pow,
+    ast.Mod,
+    ast.FloorDiv,
+    ast.USub,
+    ast.UAdd,
+)
+
+
+def _safe_calculate(expression: str) -> float:
+    if not expression.strip():
+        raise ValueError("Expression cannot be empty.")
+    parsed = ast.parse(expression, mode="eval")
+    for node in ast.walk(parsed):
+        if not isinstance(node, _ALLOWED_AST_NODES):
+            raise ValueError("Unsupported expression.")
+    return float(eval(compile(parsed, "<calculator>", "eval"), {"__builtins__": {}}))
 
 
 def _deterministic_event_signal(event: str) -> float:
@@ -787,3 +908,81 @@ def memory_import_xml(
         )
         memory_ids.append(created_record.metadata.memory_id)
     return MemoryImportResponse(imported=len(memory_ids), memory_ids=memory_ids)
+
+
+@app.get("/apps/registry", response_model=List[AppRegistryItem])
+def app_registry() -> List[AppRegistryItem]:
+    return [AppRegistryItem(**item) for item in APP_REGISTRY]
+
+
+@app.post("/apps/chat", response_model=ChatResponse)
+def chat_app(payload: ChatRequest) -> ChatResponse:
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    reply = (
+        "MyaOS chat service received your message: "
+        f"{message}. How else can I assist?"
+    )
+    return ChatResponse(reply=reply, timestamp=datetime.now(timezone.utc))
+
+
+@app.post("/apps/calculator", response_model=CalculatorResponse)
+def calculator_app(payload: CalculatorRequest) -> CalculatorResponse:
+    try:
+        result = _safe_calculate(payload.expression)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CalculatorResponse(expression=payload.expression, result=result)
+
+
+@app.post("/apps/image-editor", response_model=ImageEditorResponse)
+def image_editor_app(payload: ImageEditorRequest) -> ImageEditorResponse:
+    pipeline = [
+        f"Load asset '{payload.asset}'",
+        f"Apply action '{payload.action}'",
+        "Render preview",
+        "Queue export",
+    ]
+    return ImageEditorResponse(status="Queued", pipeline=pipeline)
+
+
+@app.get("/apps/calendar", response_model=CalendarResponse)
+def calendar_app() -> CalendarResponse:
+    events = [
+        CalendarEvent(
+            id="evt-101",
+            title="Virtueism core sync",
+            time="Today · 3:00 PM",
+            location="Ops Bridge",
+        ),
+        CalendarEvent(
+            id="evt-102",
+            title="Memory lattice review",
+            time="Tomorrow · 9:30 AM",
+            location="Lab 7B",
+        ),
+        CalendarEvent(
+            id="evt-103",
+            title="Emotion engine retro",
+            time="Friday · 1:00 PM",
+            location="Studio C",
+        ),
+    ]
+    return CalendarResponse(events=events)
+
+
+@app.post("/apps/ssh", response_model=SSHResponse)
+def ssh_app(payload: SSHRequest) -> SSHResponse:
+    command = payload.command.strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Command cannot be empty.")
+    output = (
+        "myaos@remote:~$ "
+        f"{command}\n"
+        "total 8\n"
+        "drwxr-xr-x  4 myaos staff  128 Sep 21 09:00 .\n"
+        "drwxr-xr-x  8 myaos staff  256 Sep 21 08:55 ..\n"
+        "-rw-r--r--  1 myaos staff 2048 Sep 21 08:59 system.log"
+    )
+    return SSHResponse(output=output)
