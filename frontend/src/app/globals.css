@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-[#0B0E1A] text-slate-100 font-sans;
+  min-height: 100vh;
+  background-image: radial-gradient(circle at top, rgba(57, 46, 126, 0.45), #0b0e1a 55%);
+}
+
+.mya-glow {
+  box-shadow: 0 0 40px rgba(246, 178, 62, 0.2);
+}
+
+.mya-panel {
+  background: rgba(18, 20, 40, 0.85);
+  border: 1px solid rgba(90, 98, 160, 0.4);
+  backdrop-filter: blur(18px);
+}
