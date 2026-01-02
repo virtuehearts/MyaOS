@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import json
 import os
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -119,6 +120,7 @@ class LocalResponseResponse(BaseModel):
 
 class LookupMemoryOptions(BaseModel):
     store: bool = False
+    user_approved: bool = False
     tags: List[str] = Field(default_factory=list)
     source_tags: List[str] = Field(default_factory=list)
     virtue_markers: Dict[str, float] = Field(default_factory=dict)
@@ -163,7 +165,9 @@ OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/ap
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER")
 OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "MyaOS")
+LOOKUP_AUDIT_LOG_PATH = os.getenv("LOOKUP_AUDIT_LOG_PATH", "lookup_audit.log")
 LOOKED_UP_MARKER = "[LOOKED_UP]"
+EXTERNAL_LOOKUP_SOURCE_TAG = "external-lookup"
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -397,7 +401,7 @@ def _external_marker(external_facts: Sequence[str]) -> str:
 
 def _prefix_lookup_response(text: str) -> str:
     cleaned = text.strip()
-    return f"{LOOKED_UP_MARKER} I have looked this information up. {cleaned}"
+    return f"I have looked this information up. {cleaned}"
 
 
 def _openrouter_headers() -> Dict[str, str]:
@@ -414,13 +418,49 @@ def _openrouter_headers() -> Dict[str, str]:
     return headers
 
 
+class OpenRouterClient:
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url.rstrip("/")
+
+    async def chat_completion(self, request_body: Dict[str, object]) -> httpx.Response:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await client.post(
+                f"{self.base_url}/chat/completions",
+                json=request_body,
+                headers=_openrouter_headers(),
+            )
+
+
 def _ensure_source_tag(tags: List[str], tag: str) -> List[str]:
     if tag in tags:
         return tags
     return [*tags, tag]
 
 
+def _guard_external_source_tags(tags: Sequence[str]) -> None:
+    if EXTERNAL_LOOKUP_SOURCE_TAG in tags:
+        raise HTTPException(
+            status_code=400,
+            detail="External knowledge must be stored via the /lookup endpoint.",
+        )
+
+
+def _write_lookup_audit_log(record: LookupLogRecord) -> None:
+    payload = {
+        "lookup_id": record.lookup_id,
+        "created_at": record.created_at.isoformat(),
+        "model": record.model,
+        "query": record.query,
+        "response": record.response,
+        "response_prefixed": record.response_prefixed,
+        "memory_id": record.memory_id,
+    }
+    with open(LOOKUP_AUDIT_LOG_PATH, "a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(payload) + "\n")
+
+
 LOCAL_RESPONSE_ENGINE = LocalResponseEngine()
+OPENROUTER_CLIENT = OpenRouterClient(OPENROUTER_BASE_URL)
 
 
 def generate_local_response(payload: LocalResponseRequest) -> LocalResponseResponse:
@@ -561,6 +601,11 @@ def response_local(payload: LocalResponseRequest) -> LocalResponseResponse:
 
 @app.post("/lookup", response_model=LookupResponse)
 async def lookup_external(payload: LookupRequest) -> LookupResponse:
+    if payload.memory.store and not payload.memory.user_approved:
+        raise HTTPException(
+            status_code=400,
+            detail="User approval is required before storing lookup responses in memory.",
+        )
     request_body = {
         "model": payload.model,
         "messages": [{"role": "user", "content": payload.query}],
@@ -569,12 +614,7 @@ async def lookup_external(payload: LookupRequest) -> LookupResponse:
     if payload.max_tokens is not None:
         request_body["max_tokens"] = payload.max_tokens
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{OPENROUTER_BASE_URL}/chat/completions",
-            json=request_body,
-            headers=_openrouter_headers(),
-        )
+    response = await OPENROUTER_CLIENT.chat_completion(request_body)
 
     if response.status_code >= 400:
         raise HTTPException(
@@ -596,23 +636,22 @@ async def lookup_external(payload: LookupRequest) -> LookupResponse:
         memory_payload = MemoryCreateRequest(
             content=raw_response,
             tags=payload.memory.tags,
-            source_tags=_ensure_source_tag(payload.memory.source_tags, "external-lookup"),
+            source_tags=_ensure_source_tag(payload.memory.source_tags, EXTERNAL_LOOKUP_SOURCE_TAG),
             virtue_markers=payload.memory.virtue_markers,
             salience=payload.memory.salience,
         )
         memory_id = _create_memory_record(memory_payload).metadata.memory_id
-
-    LOOKUP_LOGS.append(
-        LookupLogRecord(
-            lookup_id=lookup_id,
-            created_at=datetime.now(timezone.utc),
-            model=payload.model,
-            query=payload.query,
-            response=raw_response,
-            response_prefixed=prefixed_response,
-            memory_id=memory_id,
-        )
+    log_record = LookupLogRecord(
+        lookup_id=lookup_id,
+        created_at=datetime.now(timezone.utc),
+        model=payload.model,
+        query=payload.query,
+        response=raw_response,
+        response_prefixed=prefixed_response,
+        memory_id=memory_id,
     )
+    LOOKUP_LOGS.append(log_record)
+    _write_lookup_audit_log(log_record)
 
     return LookupResponse(
         lookup_id=lookup_id,
@@ -631,6 +670,7 @@ def lookup_logs() -> LookupLogResponse:
 @app.post("/memory", response_model=MemoryRecord)
 @app.post("/memory/add", response_model=MemoryRecord)
 def memory_add(payload: MemoryCreateRequest) -> MemoryRecord:
+    _guard_external_source_tags(payload.source_tags)
     return _create_memory_record(payload)
 
 
@@ -657,6 +697,7 @@ def memory_update(memory_id: str, payload: MemoryUpdateRequest) -> MemoryRecord:
     if payload.tags is not None:
         updated_metadata.tags = payload.tags
     if payload.source_tags is not None:
+        _guard_external_source_tags(payload.source_tags)
         updated_metadata.source_tags = payload.source_tags
     if payload.virtue_markers is not None:
         updated_metadata.virtue_markers = _normalize_virtue_markers(payload.virtue_markers)
@@ -696,6 +737,7 @@ def memory_import_json(payload: MemoryImportRequest, replace: bool = False) -> M
         reset_memory_store()
     memory_ids: List[str] = []
     for record in payload.memories:
+        _guard_external_source_tags(record.metadata.source_tags)
         memory_id = record.metadata.memory_id
         if memory_id and memory_id in MEMORY_STORE:
             memory_id = None
@@ -727,6 +769,7 @@ def memory_import_xml(
     records = _parse_memory_module_xml(xml_payload)
     memory_ids: List[str] = []
     for record in records:
+        _guard_external_source_tags(record.source_tags)
         memory_id = record.memory_id
         if memory_id and memory_id in MEMORY_STORE:
             memory_id = None
