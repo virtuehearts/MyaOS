@@ -69,6 +69,7 @@ Request body:
   "max_tokens": 128,
   "memory": {
     "store": false,
+    "user_approved": false,
     "tags": ["reference"],
     "source_tags": ["external"],
     "virtue_markers": {},
