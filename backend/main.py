@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Sequence, Tuple
 import xml.etree.ElementTree as ET
 
 from fastapi import Body, FastAPI, HTTPException, Response
@@ -96,6 +97,21 @@ class MemoryImportRequest(BaseModel):
 class MemoryImportResponse(BaseModel):
     imported: int
     memory_ids: List[str]
+
+
+class LocalResponseRequest(BaseModel):
+    message: str
+    virtue_markers: Dict[str, float] = Field(default_factory=dict)
+    used_external_lookup: bool = False
+    external_facts: List[str] = Field(default_factory=list)
+
+
+class LocalResponseResponse(BaseModel):
+    response: str
+    tone: str
+    injection_ratio: float
+    used_external_lookup: bool
+    looked_up_marker: Optional[str] = None
 
 
 MEMORY_STORE: Dict[str, MemoryRecord] = {}
@@ -205,6 +221,142 @@ def _normalize_virtue_markers(markers: Dict[str, float]) -> Dict[str, float]:
     return {key: max(0.0, min(1.0, value)) for key, value in markers.items()}
 
 
+def _stable_index(seed: str, length: int) -> int:
+    if length <= 0:
+        return 0
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    return int(digest, 16) % length
+
+
+def _time_tone(now: Optional[datetime] = None) -> str:
+    current = now or datetime.now()
+    hour = current.hour
+    if 5 <= hour < 12:
+        return "morning"
+    if 18 <= hour or hour < 5:
+        return "evening"
+    return "day"
+
+
+def _time_sentence(tone: str) -> str:
+    if tone == "morning":
+        return "Morning energy is bright here—let’s keep it lively and focused."
+    if tone == "evening":
+        return "Evening brings a quieter rhythm, so I’ll answer with a reflective calm."
+    return "Daylight focus is steady, so we’ll keep the response clear and grounded."
+
+
+def _select_template(message: str) -> Tuple[str, str]:
+    patterns: Sequence[Tuple[str, Sequence[Tuple[str, str]]]] = (
+        (
+            r"\b(hi|hello|hey|greetings)\b",
+            (
+                (
+                    "Hello! I’m tuned in and ready to help.",
+                    "Tell me what you want to explore or refine.",
+                ),
+                (
+                    "Hey there—thanks for checking in.",
+                    "Share the next task and I’ll map it out.",
+                ),
+            ),
+        ),
+        (
+            r"\b(thank(s)?|appreciate)\b",
+            (
+                (
+                    "You’re welcome, and I’m glad that landed well.",
+                    "If there’s more to refine, I’m here.",
+                ),
+                (
+                    "Happy to help!",
+                    "Let me know the next step you want to tackle.",
+                ),
+            ),
+        ),
+        (
+            r"\b(help|support|assist)\b",
+            (
+                (
+                    "I can support with planning, drafting, or refining.",
+                    "Point me at the goal and constraints.",
+                ),
+                (
+                    "I’m here to assist with clarity and structure.",
+                    "Share the details you have so far.",
+                ),
+            ),
+        ),
+        (
+            r"\b(why|how|what|when|where)\b",
+            (
+                (
+                    "That’s a good question, and I’ll answer it directly.",
+                    "I’ll keep it practical and aligned to your goals.",
+                ),
+                (
+                    "Let’s unpack that carefully.",
+                    "I’ll focus on the most relevant details for you.",
+                ),
+            ),
+        ),
+    )
+    for pattern, templates in patterns:
+        if re.search(pattern, message, flags=re.IGNORECASE):
+            idx = _stable_index(message, len(templates))
+            return templates[idx]
+    default_templates = (
+        (
+            "I’m ready to respond based on what you share.",
+            "Give me the key details and intent.",
+        ),
+        (
+            "I’m listening and can shape a response around your intent.",
+            "Share the main context or question.",
+        ),
+    )
+    idx = _stable_index(message, len(default_templates))
+    return default_templates[idx]
+
+
+def _virtue_injection(virtue_markers: Dict[str, float]) -> str:
+    if virtue_markers:
+        top_virtue = max(virtue_markers.items(), key=lambda item: item[1])[0]
+        return (
+            f"Virtueism favors {top_virtue} here, so let’s keep the tone aligned with it."
+        )
+    return "Virtueism asks for balanced intent—clear, kind, and steady."
+
+
+def _external_marker(external_facts: Sequence[str]) -> str:
+    if external_facts:
+        joined = " | ".join(external_facts)
+        return f"[LOOKED_UP] {joined}"
+    return "[LOOKED_UP] External reference consulted."
+
+
+def generate_local_response(payload: LocalResponseRequest) -> LocalResponseResponse:
+    tone = _time_tone()
+    time_line = _time_sentence(tone)
+    template_first, template_second = _select_template(payload.message)
+    sentences = [time_line, template_first, template_second]
+    virtue_line = _virtue_injection(payload.virtue_markers)
+    sentences.insert(1, virtue_line)
+    looked_up_marker: Optional[str] = None
+    if payload.used_external_lookup or payload.external_facts:
+        looked_up_marker = _external_marker(payload.external_facts)
+        sentences.append(looked_up_marker)
+    response_text = " ".join(sentences)
+    injection_ratio = 1 / len(sentences)
+    return LocalResponseResponse(
+        response=response_text,
+        tone=tone,
+        injection_ratio=injection_ratio,
+        used_external_lookup=payload.used_external_lookup or bool(payload.external_facts),
+        looked_up_marker=looked_up_marker,
+    )
+
+
 def _create_memory_record(
     payload: MemoryCreateRequest,
     memory_id: Optional[str] = None,
@@ -306,6 +458,11 @@ def state_update(payload: StateUpdateRequest) -> StateUpdateResponse:
         new_state=new_state,
         explanation="Deterministic placeholder update based on traits and event signal.",
     )
+
+
+@app.post("/response", response_model=LocalResponseResponse)
+def response_local(payload: LocalResponseRequest) -> LocalResponseResponse:
+    return generate_local_response(payload)
 
 
 @app.post("/memory", response_model=MemoryRecord)
