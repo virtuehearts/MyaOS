@@ -163,6 +163,7 @@ OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/ap
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER")
 OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "MyaOS")
+LOOKED_UP_MARKER = "[LOOKED_UP]"
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -293,77 +294,89 @@ def _time_sentence(tone: str) -> str:
     return "Daylight focus is steady, so we’ll keep the response clear and grounded."
 
 
-def _select_template(message: str) -> Tuple[str, str]:
-    patterns: Sequence[Tuple[str, Sequence[Tuple[str, str]]]] = (
-        (
-            r"\b(hi|hello|hey|greetings)\b",
+def _virtue_focus(virtue_markers: Dict[str, float]) -> str:
+    if virtue_markers:
+        return max(virtue_markers.items(), key=lambda item: item[1])[0]
+    return "balance"
+
+
+class LocalResponseEngine:
+    def __init__(self) -> None:
+        self.patterns: Sequence[Tuple[str, Sequence[Tuple[str, str]]]] = (
             (
+                r"\b(hi|hello|hey|greetings)\b",
                 (
-                    "Hello! I’m tuned in and ready to help.",
-                    "Tell me what you want to explore or refine.",
-                ),
-                (
-                    "Hey there—thanks for checking in.",
-                    "Share the next task and I’ll map it out.",
+                    (
+                        "Hello! I’m tuned in and ready to help with {virtue} in mind.",
+                        "Tell me what you want to explore or refine.",
+                    ),
+                    (
+                        "Hey there—thanks for checking in.",
+                        "Share the next task and I’ll map it out with {virtue}.",
+                    ),
                 ),
             ),
-        ),
-        (
-            r"\b(thank(s)?|appreciate)\b",
             (
+                r"\b(thank(s)?|appreciate)\b",
                 (
-                    "You’re welcome, and I’m glad that landed well.",
-                    "If there’s more to refine, I’m here.",
-                ),
-                (
-                    "Happy to help!",
-                    "Let me know the next step you want to tackle.",
+                    (
+                        "You’re welcome, and I’m glad that landed well.",
+                        "If there’s more to refine, we’ll keep it {virtue}-aligned.",
+                    ),
+                    (
+                        "Happy to help!",
+                        "Let me know the next step you want to tackle with {virtue}.",
+                    ),
                 ),
             ),
-        ),
-        (
-            r"\b(help|support|assist)\b",
             (
+                r"\b(help|support|assist)\b",
                 (
-                    "I can support with planning, drafting, or refining.",
-                    "Point me at the goal and constraints.",
-                ),
-                (
-                    "I’m here to assist with clarity and structure.",
-                    "Share the details you have so far.",
+                    (
+                        "I can support with planning, drafting, or refining.",
+                        "Point me at the goal and constraints so we keep {virtue} in view.",
+                    ),
+                    (
+                        "I’m here to assist with clarity and structure.",
+                        "Share the details you have so far and we’ll lead with {virtue}.",
+                    ),
                 ),
             ),
-        ),
-        (
-            r"\b(why|how|what|when|where)\b",
             (
+                r"\b(why|how|what|when|where)\b",
                 (
-                    "That’s a good question, and I’ll answer it directly.",
-                    "I’ll keep it practical and aligned to your goals.",
-                ),
-                (
-                    "Let’s unpack that carefully.",
-                    "I’ll focus on the most relevant details for you.",
+                    (
+                        "That’s a good question, and I’ll answer it directly.",
+                        "I’ll keep it practical and {virtue}-aligned for your goals.",
+                    ),
+                    (
+                        "Let’s unpack that carefully.",
+                        "I’ll focus on the most relevant details through {virtue}.",
+                    ),
                 ),
             ),
-        ),
-    )
-    for pattern, templates in patterns:
-        if re.search(pattern, message, flags=re.IGNORECASE):
-            idx = _stable_index(message, len(templates))
-            return templates[idx]
-    default_templates = (
-        (
-            "I’m ready to respond based on what you share.",
-            "Give me the key details and intent.",
-        ),
-        (
-            "I’m listening and can shape a response around your intent.",
-            "Share the main context or question.",
-        ),
-    )
-    idx = _stable_index(message, len(default_templates))
-    return default_templates[idx]
+        )
+        self.default_templates: Sequence[Tuple[str, str]] = (
+            (
+                "I’m ready to respond based on what you share.",
+                "Give me the key details and intent, and we’ll keep {virtue} steady.",
+            ),
+            (
+                "I’m listening and can shape a response around your intent.",
+                "Share the main context or question, and we’ll ground it in {virtue}.",
+            ),
+        )
+
+    def select_template(self, message: str, virtue_markers: Dict[str, float]) -> Tuple[str, str]:
+        virtue = _virtue_focus(virtue_markers)
+        for pattern, templates in self.patterns:
+            if re.search(pattern, message, flags=re.IGNORECASE):
+                idx = _stable_index(message, len(templates))
+                return tuple(line.format(virtue=virtue) for line in templates[idx])
+        idx = _stable_index(message, len(self.default_templates))
+        return tuple(
+            line.format(virtue=virtue) for line in self.default_templates[idx]
+        )
 
 
 def _virtue_injection(virtue_markers: Dict[str, float]) -> str:
@@ -378,13 +391,13 @@ def _virtue_injection(virtue_markers: Dict[str, float]) -> str:
 def _external_marker(external_facts: Sequence[str]) -> str:
     if external_facts:
         joined = " | ".join(external_facts)
-        return f"[LOOKED_UP] {joined}"
-    return "[LOOKED_UP] External reference consulted."
+        return f"{LOOKED_UP_MARKER} {joined}"
+    return f"{LOOKED_UP_MARKER} External reference consulted."
 
 
 def _prefix_lookup_response(text: str) -> str:
     cleaned = text.strip()
-    return f"I have looked this information up. {cleaned}"
+    return f"{LOOKED_UP_MARKER} I have looked this information up. {cleaned}"
 
 
 def _openrouter_headers() -> Dict[str, str]:
@@ -407,13 +420,17 @@ def _ensure_source_tag(tags: List[str], tag: str) -> List[str]:
     return [*tags, tag]
 
 
+LOCAL_RESPONSE_ENGINE = LocalResponseEngine()
+
+
 def generate_local_response(payload: LocalResponseRequest) -> LocalResponseResponse:
     tone = _time_tone()
     time_line = _time_sentence(tone)
-    template_first, template_second = _select_template(payload.message)
-    sentences = [time_line, template_first, template_second]
     virtue_line = _virtue_injection(payload.virtue_markers)
-    sentences.insert(1, virtue_line)
+    template_first, template_second = LOCAL_RESPONSE_ENGINE.select_template(
+        payload.message, payload.virtue_markers
+    )
+    sentences = [time_line, virtue_line, template_first, template_second]
     looked_up_marker: Optional[str] = None
     if payload.used_external_lookup or payload.external_facts:
         looked_up_marker = _external_marker(payload.external_facts)
