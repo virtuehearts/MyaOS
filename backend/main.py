@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import os
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
+import uuid
 import xml.etree.ElementTree as ET
 
 from fastapi import Body, FastAPI, HTTPException, Response
+import httpx
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -114,8 +117,52 @@ class LocalResponseResponse(BaseModel):
     looked_up_marker: Optional[str] = None
 
 
+class LookupMemoryOptions(BaseModel):
+    store: bool = False
+    tags: List[str] = Field(default_factory=list)
+    source_tags: List[str] = Field(default_factory=list)
+    virtue_markers: Dict[str, float] = Field(default_factory=dict)
+    salience: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class LookupRequest(BaseModel):
+    query: str
+    model: str = "openai/gpt-3.5-turbo"
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(default=None, ge=1)
+    memory: LookupMemoryOptions = Field(default_factory=LookupMemoryOptions)
+
+
+class LookupResponse(BaseModel):
+    lookup_id: str
+    model: str
+    response: str
+    raw_response: str
+    memory_id: Optional[str] = None
+
+
+class LookupLogRecord(BaseModel):
+    lookup_id: str
+    created_at: datetime
+    model: str
+    query: str
+    response: str
+    response_prefixed: str
+    memory_id: Optional[str] = None
+
+
+class LookupLogResponse(BaseModel):
+    logs: List[LookupLogRecord]
+
+
 MEMORY_STORE: Dict[str, MemoryRecord] = {}
 VECTOR_INDEX: Optional[FAISS] = None
+LOOKUP_LOGS: List[LookupLogRecord] = []
+
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER")
+OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "MyaOS")
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -335,6 +382,31 @@ def _external_marker(external_facts: Sequence[str]) -> str:
     return "[LOOKED_UP] External reference consulted."
 
 
+def _prefix_lookup_response(text: str) -> str:
+    cleaned = text.strip()
+    return f"I have looked this information up. {cleaned}"
+
+
+def _openrouter_headers() -> Dict[str, str]:
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenRouter API key is not configured.")
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    if OPENROUTER_HTTP_REFERER:
+        headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER
+    if OPENROUTER_APP_TITLE:
+        headers["X-Title"] = OPENROUTER_APP_TITLE
+    return headers
+
+
+def _ensure_source_tag(tags: List[str], tag: str) -> List[str]:
+    if tag in tags:
+        return tags
+    return [*tags, tag]
+
+
 def generate_local_response(payload: LocalResponseRequest) -> LocalResponseResponse:
     tone = _time_tone()
     time_line = _time_sentence(tone)
@@ -462,7 +534,81 @@ def state_update(payload: StateUpdateRequest) -> StateUpdateResponse:
 
 @app.post("/response", response_model=LocalResponseResponse)
 def response_local(payload: LocalResponseRequest) -> LocalResponseResponse:
+    if payload.used_external_lookup or payload.external_facts:
+        raise HTTPException(
+            status_code=400,
+            detail="External knowledge must be retrieved via the /lookup endpoint.",
+        )
     return generate_local_response(payload)
+
+
+@app.post("/lookup", response_model=LookupResponse)
+async def lookup_external(payload: LookupRequest) -> LookupResponse:
+    request_body = {
+        "model": payload.model,
+        "messages": [{"role": "user", "content": payload.query}],
+        "temperature": payload.temperature,
+    }
+    if payload.max_tokens is not None:
+        request_body["max_tokens"] = payload.max_tokens
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{OPENROUTER_BASE_URL}/chat/completions",
+            json=request_body,
+            headers=_openrouter_headers(),
+        )
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenRouter request failed with status {response.status_code}.",
+        )
+
+    data = response.json()
+    raw_response = (
+        data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    )
+    if not raw_response:
+        raise HTTPException(status_code=502, detail="OpenRouter response was empty.")
+
+    prefixed_response = _prefix_lookup_response(raw_response)
+    lookup_id = uuid.uuid4().hex
+    memory_id: Optional[str] = None
+    if payload.memory.store:
+        memory_payload = MemoryCreateRequest(
+            content=raw_response,
+            tags=payload.memory.tags,
+            source_tags=_ensure_source_tag(payload.memory.source_tags, "external-lookup"),
+            virtue_markers=payload.memory.virtue_markers,
+            salience=payload.memory.salience,
+        )
+        memory_id = _create_memory_record(memory_payload).metadata.memory_id
+
+    LOOKUP_LOGS.append(
+        LookupLogRecord(
+            lookup_id=lookup_id,
+            created_at=datetime.now(timezone.utc),
+            model=payload.model,
+            query=payload.query,
+            response=raw_response,
+            response_prefixed=prefixed_response,
+            memory_id=memory_id,
+        )
+    )
+
+    return LookupResponse(
+        lookup_id=lookup_id,
+        model=payload.model,
+        response=prefixed_response,
+        raw_response=raw_response,
+        memory_id=memory_id,
+    )
+
+
+@app.get("/lookup/logs", response_model=LookupLogResponse)
+def lookup_logs() -> LookupLogResponse:
+    return LookupLogResponse(logs=LOOKUP_LOGS)
 
 
 @app.post("/memory", response_model=MemoryRecord)
