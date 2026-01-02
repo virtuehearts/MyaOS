@@ -7,7 +7,7 @@ This backend provides a deterministic, placeholder emotional state pipeline and 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install fastapi uvicorn
+pip install -r backend/requirements.txt
 ```
 
 ## Run
@@ -46,19 +46,26 @@ Response:
 ```
 
 ### Memory Operations
-- `POST /memory/add`
+- `POST /memory` or `POST /memory/add`
+- `GET /memory` or `GET /memory/list`
+- `GET /memory/{memory_id}`
+- `PUT /memory/{memory_id}`
+- `DELETE /memory/{memory_id}`
+- `GET /memory/export/json`
+- `GET /memory/export/xml`
+- `POST /memory/import/json`
+- `POST /memory/import/xml`
 
 Request body:
 ```json
 {
   "content": "User likes calming music.",
   "tags": ["preference", "music"],
+  "source_tags": ["chat", "user-17"],
+  "virtue_markers": { "temperance": 0.7 },
   "salience": 0.8
 }
 ```
-
-- `GET /memory/list`
-- `GET /memory/{memory_id}`
 
 ## Notes
 - Memory storage is in-memory and resets on restart.
