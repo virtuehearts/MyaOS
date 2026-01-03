@@ -28,9 +28,9 @@ const mockMessages = [
 
 export function ChatWindow() {
   return (
-    <Card className="flex h-full flex-col">
-      <CardHeader>
-        <CardTitle>Mya Chat</CardTitle>
+    <Card className="flex h-full flex-col border border-retro-border bg-retro-surface text-retro-text">
+      <CardHeader className="border-b border-retro-border bg-retro-title-active">
+        <CardTitle className="text-sm font-semibold text-retro-text">Mya Chat</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-4">
         <ScrollArea className="flex-1 pr-2">
@@ -41,10 +41,10 @@ export function ChatWindow() {
                   <AvatarFallback>{message.sender[0]}</AvatarFallback>
                 </Avatar>
                 <div>
-                  <p className="text-sm font-semibold text-slate-200">
+                  <p className="text-sm font-semibold text-retro-text">
                     {message.sender}
                   </p>
-                  <p className="text-sm text-slate-300">{message.content}</p>
+                  <p className="text-sm text-retro-accent">{message.content}</p>
                 </div>
               </div>
             ))}
@@ -52,7 +52,7 @@ export function ChatWindow() {
         </ScrollArea>
         <div className="flex gap-2">
           <Input placeholder="Share your thoughts with Mya..." />
-          <Button className="bg-mya-saffron text-slate-900 hover:bg-mya-saffron/90">
+          <Button className="px-3" aria-label="Send message">
             <Send className="h-4 w-4" />
           </Button>
         </div>

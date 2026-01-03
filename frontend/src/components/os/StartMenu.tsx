@@ -1,10 +1,9 @@
 'use client';
 
-import { UserCircle2 } from 'lucide-react';
-
 import { Button } from '@/components/ui/button';
 import { apiRequest } from '@/lib/api';
 import { useAuthStore } from '@/store/authStore';
+import { useOsStore } from '@/store/osStore';
 
 interface StartMenuProps {
   isOpen: boolean;
@@ -13,6 +12,7 @@ interface StartMenuProps {
 
 export function StartMenu({ isOpen, onClose }: StartMenuProps) {
   const { user, token, clearSession } = useAuthStore();
+  const { openWindow, focusWindow } = useOsStore();
 
   if (!isOpen) {
     return null;
@@ -32,30 +32,50 @@ export function StartMenu({ isOpen, onClose }: StartMenuProps) {
     }
   };
 
+  const handleLaunch = (id: 'chat' | 'memory' | 'settings') => {
+    openWindow(id);
+    focusWindow(id);
+    onClose();
+  };
+
   return (
-    <div className="fixed bottom-24 left-1/2 z-40 w-[min(420px,90%)] -translate-x-1/2">
-      <div className="mya-panel rounded-2xl p-6 shadow-xl">
-        <div className="flex items-center gap-3">
-          <UserCircle2 className="h-10 w-10 text-mya-saffron" />
-          <div>
-            <p className="text-base font-semibold">
-              {user?.name ? `Welcome, ${user.name}` : 'Welcome back'}
-            </p>
-            <p className="text-xs text-slate-400">{user?.email ?? 'Virtueism guided profile'}</p>
-          </div>
+    <div className="fixed bottom-12 left-3 z-40 w-[240px]">
+      <div className="mya-panel border border-retro-border">
+        <div className="border-b border-retro-border bg-retro-title-active px-3 py-2 text-xs font-semibold text-retro-text">
+          {user?.name ? `${user.name}` : 'MyaOS User'}
         </div>
-        <div className="mt-6 space-y-2 text-sm">
-          <Button variant="outline" className="w-full" onClick={onClose}>
-            Launch Mya Chat
+        <div className="flex flex-col py-2 text-xs">
+          <div className="px-3 pb-1 text-[10px] uppercase text-retro-accent">
+            Local Programs
+          </div>
+          <Button variant="ghost" className="justify-start px-3" onClick={() => handleLaunch('chat')}>
+            Mya Chat
           </Button>
-          <Button variant="outline" className="w-full" onClick={onClose}>
-            Open Memory Vault
+          <Button variant="ghost" className="justify-start px-3" onClick={() => handleLaunch('memory')}>
+            Memory Vault
           </Button>
-          <Button variant="ghost" className="w-full" onClick={onClose}>
-            System Preferences
+          <Button
+            variant="ghost"
+            className="justify-start px-3"
+            onClick={() => handleLaunch('settings')}
+          >
+            System Settings
           </Button>
-          <Button variant="outline" className="w-full" onClick={handleSignOut}>
-            Sign out
+          <div className="mt-2 px-3 pb-1 text-[10px] uppercase text-retro-accent">
+            Remote Programs (Python)
+          </div>
+          <Button variant="ghost" className="justify-start px-3" onClick={onClose}>
+            Diagnostics Runner
+          </Button>
+          <Button variant="ghost" className="justify-start px-3" onClick={onClose}>
+            Report Sync Service
+          </Button>
+          <Button variant="ghost" className="justify-start px-3" onClick={onClose}>
+            Data Import Console
+          </Button>
+          <div className="my-2 border-t border-retro-border" />
+          <Button variant="ghost" className="justify-start px-3" onClick={handleSignOut}>
+            Shut Down...
           </Button>
         </div>
       </div>
