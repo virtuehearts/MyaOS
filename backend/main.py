@@ -926,7 +926,7 @@ async def auth_oauth_callback(
     provider: str,
     code: str,
     state: str,
-    request: Request,
+    _: None = Depends(_rate_limit("auth", limit=10, window_seconds=60)),
 ) -> RedirectResponse:
     config = OAUTH_PROVIDERS.get(provider.lower())
     if not config:
