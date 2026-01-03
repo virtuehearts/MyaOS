@@ -80,16 +80,16 @@ export function AuthOverlay() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-6">
-      <Card className="mya-panel w-full max-w-md space-y-6 rounded-2xl border border-white/10 p-6 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-retro-bg/90 p-6">
+      <Card className="mya-panel w-full max-w-md space-y-6 border border-retro-border p-6">
         <div>
-          <p className="text-sm uppercase tracking-[0.25em] text-mya-saffron">
+          <p className="text-sm uppercase tracking-[0.25em] text-retro-accent">
             MyaOS Secure Access
           </p>
           <h1 className="mt-2 text-2xl font-semibold">
             {isRegister ? 'Create your session' : 'Welcome back'}
           </h1>
-          <p className="mt-2 text-sm text-slate-300">
+          <p className="mt-2 text-sm text-retro-text/80">
             {isRegister
               ? 'Register with email and keep your memories private.'
               : 'Sign in to access your secure workspace and memory vault.'}
@@ -122,14 +122,14 @@ export function AuthOverlay() {
             minLength={8}
             required
           />
-          {error && <p className="text-sm text-rose-300">{error}</p>}
+          {error && <p className="text-sm text-red-300">{error}</p>}
           <Button type="submit" className="w-full" disabled={isSubmitting}>
             {isRegister ? 'Create account' : 'Sign in'}
           </Button>
         </form>
 
         <div className="space-y-3">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
+          <p className="text-xs uppercase tracking-[0.2em] text-retro-accent">
             Or continue with
           </p>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -152,11 +152,11 @@ export function AuthOverlay() {
           </div>
         </div>
 
-        <div className="text-sm text-slate-400">
+        <div className="text-sm text-retro-accent">
           {isRegister ? (
             <button
               type="button"
-              className="text-mya-saffron"
+              className="text-retro-text"
               onClick={() => setIsRegister(false)}
               disabled={isSubmitting}
             >
@@ -165,7 +165,7 @@ export function AuthOverlay() {
           ) : (
             <button
               type="button"
-              className="text-mya-saffron"
+              className="text-retro-text"
               onClick={() => setIsRegister(true)}
               disabled={isSubmitting}
             >

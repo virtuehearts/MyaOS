@@ -36,7 +36,7 @@ export default function OAuthCallbackPage() {
   }, [searchParams, setSession, router, clearSession]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 text-sm text-slate-200">
+    <div className="flex min-h-screen items-center justify-center bg-retro-bg text-sm text-retro-text">
       {message}
     </div>
   );

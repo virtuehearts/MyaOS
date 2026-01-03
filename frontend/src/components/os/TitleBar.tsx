@@ -1,7 +1,5 @@
 'use client';
 
-import { X, Minus, Square } from 'lucide-react';
-
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -20,52 +18,75 @@ export function TitleBar({
   onClose,
   onMinimize,
   onMaximize,
-  variant = 'mac'
+  variant = 'windows'
 }: TitleBarProps) {
+  const buttonLabelClass = 'h-6 w-6 px-0 text-xs font-bold leading-none border border-retro-border';
+
   return (
     <div
       className={cn(
-        'flex items-center justify-between rounded-t-xl border-b border-slate-800/60 px-4 py-2 text-sm',
-        isActive ? 'bg-slate-900/70' : 'bg-slate-950/50'
+        'flex items-center justify-between border-b border-retro-border px-3 py-1 text-xs',
+        isActive ? 'bg-retro-title-active' : 'bg-retro-surface'
       )}
     >
       <div className="flex items-center gap-2">
         {variant === 'mac' ? (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <Button
               variant="ghost"
               size="sm"
-              className="h-3 w-3 rounded-full bg-red-500 p-0"
-              onClick={onClose}
-            />
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-3 w-3 rounded-full bg-yellow-500 p-0"
+              className={cn(buttonLabelClass)}
               onClick={onMinimize}
-            />
+            >
+              _
+            </Button>
             <Button
               variant="ghost"
               size="sm"
-              className="h-3 w-3 rounded-full bg-green-500 p-0"
+              className={cn(buttonLabelClass)}
               onClick={onMaximize}
-            />
+            >
+              □
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(buttonLabelClass)}
+              onClick={onClose}
+            >
+              X
+            </Button>
           </div>
         ) : (
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={onMinimize}>
-              <Minus className="h-4 w-4" />
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(buttonLabelClass)}
+              onClick={onMinimize}
+            >
+              _
             </Button>
-            <Button variant="ghost" size="sm" onClick={onMaximize}>
-              <Square className="h-4 w-4" />
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(buttonLabelClass)}
+              onClick={onMaximize}
+            >
+              □
             </Button>
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="h-4 w-4" />
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(buttonLabelClass)}
+              onClick={onClose}
+            >
+              X
             </Button>
           </div>
         )}
       </div>
-      <span className="text-slate-200">{title}</span>
+      <span className="text-retro-text">{title}</span>
       <div className="h-6 w-20" />
     </div>
   );

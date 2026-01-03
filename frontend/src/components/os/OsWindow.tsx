@@ -46,13 +46,13 @@ export function OsWindow({
       onDragStart={onFocus}
       onResizeStart={onFocus}
       style={{ zIndex }}
-      className="mya-panel rounded-xl"
+      className="mya-panel border"
       aria-label={`${id}-window`}
     >
       <div
         className={cn(
-          'flex h-full w-full flex-col overflow-hidden rounded-xl',
-          isActive ? 'ring-1 ring-mya-saffron/40' : 'ring-1 ring-transparent'
+          'flex h-full w-full flex-col overflow-hidden border border-retro-border',
+          isActive ? 'bg-retro-surface' : 'bg-retro-surface/90'
         )}
       >
         <TitleBar
