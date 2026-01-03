@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  db:
+    build: ./mysql
+    environment:
+      MYSQL_DATABASE: myaos
+      MYSQL_USER: myaos
+      MYSQL_PASSWORD: myaos_password
+      MYSQL_ROOT_PASSWORD: root_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+        reservations:
+          cpus: "0.5"
+          memory: 512m
+
+  backend:
+    build: ./backend
+    environment:
+      FRONTEND_ORIGIN: https://your-domain.example
+      FRONTEND_OAUTH_REDIRECT: https://your-domain.example/auth/callback
+      OAUTH_REDIRECT_URI: https://api.your-domain.example/auth/oauth/callback
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_started
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1g
+        reservations:
+          cpus: "0.25"
+          memory: 256m
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: https://api.your-domain.example
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768m
+        reservations:
+          cpus: "0.25"
+          memory: 256m
+
+volumes:
+  mysql_data:

@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  db:
+    build: ./mysql
+    environment:
+      MYSQL_DATABASE: myaos
+      MYSQL_USER: myaos
+      MYSQL_PASSWORD: myaos_password
+      MYSQL_ROOT_PASSWORD: root_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    mem_limit: 1g
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      FRONTEND_ORIGIN: http://localhost:3000
+      FRONTEND_OAUTH_REDIRECT: http://localhost:3000/auth/callback
+      OAUTH_REDIRECT_URI: http://localhost:8000/auth/oauth/callback
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: "1.0"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: "0.5"
+
+volumes:
+  mysql_data:
