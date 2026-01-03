@@ -1,15 +1,22 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 import uuid
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 import xml.etree.ElementTree as ET
 
-from fastapi import Body, FastAPI, HTTPException, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
@@ -17,6 +24,14 @@ from langchain_core.embeddings import Embeddings
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="MyaOS Backend", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[FRONTEND_ORIGIN],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class EmotionState(BaseModel):
@@ -157,9 +172,47 @@ class LookupLogResponse(BaseModel):
     logs: List[LookupLogRecord]
 
 
-MEMORY_STORE: Dict[str, MemoryRecord] = {}
-VECTOR_INDEX: Optional[FAISS] = None
-LOOKUP_LOGS: List[LookupLogRecord] = []
+class UserProfile(BaseModel):
+    user_id: str
+    email: str
+    name: Optional[str] = None
+    created_at: datetime
+
+
+class AuthRegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+
+
+class AuthLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: UserProfile
+    expires_at: datetime
+
+
+class AuthMeResponse(BaseModel):
+    user: UserProfile
+
+
+class OAuthStartRequest(BaseModel):
+    provider: str
+
+
+class OAuthStartResponse(BaseModel):
+    provider: str
+    auth_url: str
+    state: str
+
+
+MEMORY_STORE: Dict[str, Dict[str, MemoryRecord]] = {}
+VECTOR_INDEX: Dict[str, FAISS] = {}
+LOOKUP_LOGS: Dict[str, List[LookupLogRecord]] = {}
 
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -168,6 +221,16 @@ OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "MyaOS")
 LOOKUP_AUDIT_LOG_PATH = os.getenv("LOOKUP_AUDIT_LOG_PATH", "lookup_audit.log")
 LOOKED_UP_MARKER = "[LOOKED_UP]"
 EXTERNAL_LOOKUP_SOURCE_TAG = "external-lookup"
+AUTH_SECRET = os.getenv("AUTH_SECRET", "dev-secret-change-me")
+AUTH_SESSION_TTL_MINUTES = int(os.getenv("AUTH_SESSION_TTL_MINUTES", "120"))
+AUTH_STATE_TTL_SECONDS = int(os.getenv("AUTH_STATE_TTL_SECONDS", "600"))
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
+FRONTEND_OAUTH_REDIRECT = os.getenv(
+    "FRONTEND_OAUTH_REDIRECT", "http://localhost:3000/auth/callback"
+)
+OAUTH_REDIRECT_URI = os.getenv(
+    "OAUTH_REDIRECT_URI", "http://localhost:8000/auth/oauth/callback"
+)
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -192,8 +255,210 @@ class DeterministicEmbeddings(Embeddings):
 EMBEDDINGS = DeterministicEmbeddings()
 
 
+class PasswordRecord(BaseModel):
+    salt: str
+    digest: str
+
+
+class SessionRecord(BaseModel):
+    session_id: str
+    user_id: str
+    created_at: datetime
+    expires_at: datetime
+
+
+USERS_BY_EMAIL: Dict[str, UserProfile] = {}
+USERS_BY_ID: Dict[str, UserProfile] = {}
+USER_PASSWORDS: Dict[str, PasswordRecord] = {}
+SESSIONS: Dict[str, SessionRecord] = {}
+OAUTH_STATES: Dict[str, Dict[str, str]] = {}
+
+
+OAUTH_PROVIDERS: Dict[str, Dict[str, Optional[str]]] = {
+    "google": {
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+        "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "userinfo_url": "https://openidconnect.googleapis.com/v1/userinfo",
+        "scope": "openid email profile",
+    },
+    "github": {
+        "client_id": os.getenv("GITHUB_CLIENT_ID"),
+        "client_secret": os.getenv("GITHUB_CLIENT_SECRET"),
+        "auth_url": "https://github.com/login/oauth/authorize",
+        "token_url": "https://github.com/login/oauth/access_token",
+        "userinfo_url": "https://api.github.com/user",
+        "emails_url": "https://api.github.com/user/emails",
+        "scope": "read:user user:email",
+    },
+}
+
+
+class RateLimiter:
+    def __init__(self) -> None:
+        self.hits: Dict[str, List[float]] = {}
+
+    def check(self, key: str, limit: int, window_seconds: int) -> None:
+        now = time.time()
+        window_start = now - window_seconds
+        timestamps = [ts for ts in self.hits.get(key, []) if ts > window_start]
+        if len(timestamps) >= limit:
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded. Please slow down and try again.",
+            )
+        timestamps.append(now)
+        self.hits[key] = timestamps
+
+
+RATE_LIMITER = RateLimiter()
+
+
 def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
     return max(min_value, min(max_value, value))
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def _b64url_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + padding)
+
+
+def _sign_token(payload: str) -> str:
+    digest = hmac.new(AUTH_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+    return _b64url_encode(digest)
+
+
+def _encode_token(session: SessionRecord) -> str:
+    payload = json.dumps(
+        {
+            "sid": session.session_id,
+            "uid": session.user_id,
+            "exp": int(session.expires_at.timestamp()),
+        },
+        separators=(",", ":"),
+    )
+    payload_b64 = _b64url_encode(payload.encode("utf-8"))
+    signature = _sign_token(payload_b64)
+    return f"mya.{payload_b64}.{signature}"
+
+
+def _decode_token(token: str) -> SessionRecord:
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != "mya":
+        raise HTTPException(status_code=401, detail="Invalid session token.")
+    payload_b64 = parts[1]
+    signature = parts[2]
+    expected_sig = _sign_token(payload_b64)
+    if not hmac.compare_digest(signature, expected_sig):
+        raise HTTPException(status_code=401, detail="Invalid session token.")
+    payload = json.loads(_b64url_decode(payload_b64))
+    session_id = payload.get("sid")
+    user_id = payload.get("uid")
+    exp = payload.get("exp")
+    if not session_id or not user_id or not exp:
+        raise HTTPException(status_code=401, detail="Invalid session token.")
+    session = SESSIONS.get(session_id)
+    if not session or session.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Session not found.")
+    if exp < int(time.time()) or session.expires_at < datetime.now(timezone.utc):
+        SESSIONS.pop(session_id, None)
+        raise HTTPException(status_code=401, detail="Session expired.")
+    return session
+
+
+def _hash_password(password: str, salt: bytes) -> str:
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120000)
+    return _b64url_encode(digest)
+
+
+def _create_password_record(password: str) -> PasswordRecord:
+    salt = os.urandom(16)
+    digest = _hash_password(password, salt)
+    return PasswordRecord(salt=_b64url_encode(salt), digest=digest)
+
+
+def _verify_password(password: str, record: PasswordRecord) -> bool:
+    salt = _b64url_decode(record.salt)
+    digest = _hash_password(password, salt)
+    return hmac.compare_digest(digest, record.digest)
+
+
+def _create_session(user: UserProfile) -> SessionRecord:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=AUTH_SESSION_TTL_MINUTES)
+    session = SessionRecord(
+        session_id=secrets.token_urlsafe(32),
+        user_id=user.user_id,
+        created_at=now,
+        expires_at=expires_at,
+    )
+    SESSIONS[session.session_id] = session
+    return session
+
+
+def _rate_limit(scope: str, limit: int, window_seconds: int) -> None:
+    def _limiter(request: Request) -> None:
+        forwarded = request.headers.get("x-forwarded-for")
+        client = forwarded.split(",")[0].strip() if forwarded else None
+        identifier = client or (request.client.host if request.client else "unknown")
+        key = f"{scope}:{identifier}"
+        RATE_LIMITER.check(key, limit=limit, window_seconds=window_seconds)
+
+    return _limiter
+
+
+def _current_user(request: Request) -> UserProfile:
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token.")
+    token = auth_header.split(" ", 1)[1].strip()
+    session = _decode_token(token)
+    user = USERS_BY_ID.get(session.user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found.")
+    return user
+
+
+def _get_user_store(user_id: str) -> Dict[str, MemoryRecord]:
+    return MEMORY_STORE.setdefault(user_id, {})
+
+
+def _get_user_logs(user_id: str) -> List[LookupLogRecord]:
+    return LOOKUP_LOGS.setdefault(user_id, [])
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _create_user(email: str, name: Optional[str] = None, password: Optional[str] = None) -> UserProfile:
+    normalized = _normalize_email(email)
+    if normalized in USERS_BY_EMAIL:
+        raise HTTPException(status_code=409, detail="Email is already registered.")
+    user = UserProfile(
+        user_id=uuid.uuid4().hex,
+        email=normalized,
+        name=name,
+        created_at=datetime.now(timezone.utc),
+    )
+    USERS_BY_EMAIL[normalized] = user
+    USERS_BY_ID[user.user_id] = user
+    if password is not None:
+        USER_PASSWORDS[user.user_id] = _create_password_record(password)
+    return user
+
+
+def _find_or_create_oauth_user(email: str, name: Optional[str]) -> UserProfile:
+    normalized = _normalize_email(email)
+    existing = USERS_BY_EMAIL.get(normalized)
+    if existing:
+        return existing
+    return _create_user(normalized, name=name)
 
 
 def _deterministic_event_signal(event: str) -> float:
@@ -222,11 +487,11 @@ def update_emotion_state(
     )
 
 
-def _generate_memory_id() -> str:
-    index = len(MEMORY_STORE) + 1
+def _generate_memory_id(user_store: Dict[str, MemoryRecord]) -> str:
+    index = len(user_store) + 1
     while True:
         memory_id = f"mem-{index:04d}"
-        if memory_id not in MEMORY_STORE:
+        if memory_id not in user_store:
             return memory_id
         index += 1
 
@@ -244,29 +509,31 @@ def _make_document(record: MemoryRecord) -> Document:
     )
 
 
-def _rebuild_vector_index() -> None:
-    global VECTOR_INDEX
-    records = list(MEMORY_STORE.values())
+def _rebuild_vector_index(user_id: str) -> None:
+    user_store = _get_user_store(user_id)
+    records = list(user_store.values())
     if not records:
-        VECTOR_INDEX = None
+        VECTOR_INDEX.pop(user_id, None)
         return
     documents = [_make_document(record) for record in records]
     ids = [record.metadata.memory_id for record in records]
-    VECTOR_INDEX = FAISS.from_documents(documents, EMBEDDINGS, ids=ids)
+    VECTOR_INDEX[user_id] = FAISS.from_documents(documents, EMBEDDINGS, ids=ids)
 
 
-def _index_record(record: MemoryRecord) -> None:
-    global VECTOR_INDEX
+def _index_record(user_id: str, record: MemoryRecord) -> None:
     document = _make_document(record)
-    if VECTOR_INDEX is None:
-        VECTOR_INDEX = FAISS.from_documents([document], EMBEDDINGS, ids=[record.metadata.memory_id])
+    vector_index = VECTOR_INDEX.get(user_id)
+    if vector_index is None:
+        VECTOR_INDEX[user_id] = FAISS.from_documents(
+            [document], EMBEDDINGS, ids=[record.metadata.memory_id]
+        )
     else:
-        VECTOR_INDEX.add_documents([document], ids=[record.metadata.memory_id])
+        vector_index.add_documents([document], ids=[record.metadata.memory_id])
 
 
-def reset_memory_store() -> None:
-    MEMORY_STORE.clear()
-    _rebuild_vector_index()
+def reset_memory_store(user_id: str) -> None:
+    _get_user_store(user_id).clear()
+    _rebuild_vector_index(user_id)
 
 
 def _normalize_virtue_markers(markers: Dict[str, float]) -> Dict[str, float]:
@@ -487,12 +754,14 @@ def generate_local_response(payload: LocalResponseRequest) -> LocalResponseRespo
 
 
 def _create_memory_record(
+    user_id: str,
     payload: MemoryCreateRequest,
     memory_id: Optional[str] = None,
     created_at: Optional[datetime] = None,
     updated_at: Optional[datetime] = None,
 ) -> MemoryRecord:
-    record_id = memory_id or _generate_memory_id()
+    user_store = _get_user_store(user_id)
+    record_id = memory_id or _generate_memory_id(user_store)
     record = MemoryRecord(
         metadata=MemoryMetadata(
             memory_id=record_id,
@@ -505,8 +774,8 @@ def _create_memory_record(
         ),
         content=payload.content,
     )
-    MEMORY_STORE[record_id] = record
-    _index_record(record)
+    user_store[record_id] = record
+    _index_record(user_id, record)
     return record
 
 
@@ -580,8 +849,166 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/auth/register", response_model=AuthResponse)
+def auth_register(
+    payload: AuthRegisterRequest,
+    _: None = Depends(_rate_limit("auth", limit=5, window_seconds=60)),
+) -> AuthResponse:
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    user = _create_user(payload.email, name=payload.name, password=payload.password)
+    session = _create_session(user)
+    token = _encode_token(session)
+    return AuthResponse(token=token, user=user, expires_at=session.expires_at)
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def auth_login(
+    payload: AuthLoginRequest,
+    _: None = Depends(_rate_limit("auth", limit=5, window_seconds=60)),
+) -> AuthResponse:
+    normalized = _normalize_email(payload.email)
+    user = USERS_BY_EMAIL.get(normalized)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    record = USER_PASSWORDS.get(user.user_id)
+    if not record or not _verify_password(payload.password, record):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    session = _create_session(user)
+    token = _encode_token(session)
+    return AuthResponse(token=token, user=user, expires_at=session.expires_at)
+
+
+@app.post("/auth/logout")
+def auth_logout(
+    user: UserProfile = Depends(_current_user),
+) -> Dict[str, str]:
+    session_ids = [sid for sid, session in SESSIONS.items() if session.user_id == user.user_id]
+    for session_id in session_ids:
+        SESSIONS.pop(session_id, None)
+    return {"status": "logged_out"}
+
+
+@app.get("/auth/me", response_model=AuthMeResponse)
+def auth_me(user: UserProfile = Depends(_current_user)) -> AuthMeResponse:
+    return AuthMeResponse(user=user)
+
+
+@app.post("/auth/oauth/start", response_model=OAuthStartResponse)
+def auth_oauth_start(
+    payload: OAuthStartRequest,
+    _: None = Depends(_rate_limit("auth", limit=5, window_seconds=60)),
+) -> OAuthStartResponse:
+    provider = payload.provider.lower()
+    config = OAUTH_PROVIDERS.get(provider)
+    if not config:
+        raise HTTPException(status_code=400, detail="Unsupported OAuth provider.")
+    if not config.get("client_id") or not config.get("client_secret"):
+        raise HTTPException(status_code=400, detail="OAuth provider is not configured.")
+    state = secrets.token_urlsafe(16)
+    OAUTH_STATES[state] = {
+        "provider": provider,
+        "created_at": str(int(time.time())),
+    }
+    query = {
+        "response_type": "code",
+        "client_id": config["client_id"],
+        "redirect_uri": OAUTH_REDIRECT_URI,
+        "scope": config["scope"],
+        "state": state,
+    }
+    auth_url = f"{config['auth_url']}?{urlencode(query)}"
+    return OAuthStartResponse(provider=provider, auth_url=auth_url, state=state)
+
+
+@app.get("/auth/oauth/callback")
+async def auth_oauth_callback(
+    provider: str,
+    code: str,
+    state: str,
+    request: Request,
+) -> RedirectResponse:
+    config = OAUTH_PROVIDERS.get(provider.lower())
+    if not config:
+        raise HTTPException(status_code=400, detail="Unsupported OAuth provider.")
+    state_payload = OAUTH_STATES.pop(state, None)
+    if not state_payload or state_payload.get("provider") != provider.lower():
+        raise HTTPException(status_code=400, detail="Invalid OAuth state.")
+    created_at = int(state_payload.get("created_at", "0"))
+    if int(time.time()) - created_at > AUTH_STATE_TTL_SECONDS:
+        raise HTTPException(status_code=400, detail="OAuth state expired.")
+
+    token_payload = {
+        "client_id": config["client_id"],
+        "client_secret": config["client_secret"],
+        "code": code,
+        "redirect_uri": OAUTH_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        token_headers = {"Accept": "application/json"}
+        token_response = await client.post(config["token_url"], data=token_payload, headers=token_headers)
+        if token_response.status_code >= 400:
+            raise HTTPException(status_code=502, detail="OAuth token exchange failed.")
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=502, detail="OAuth access token missing.")
+
+        if provider.lower() == "github":
+            user_response = await client.get(
+                config["userinfo_url"],
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            )
+            if user_response.status_code >= 400:
+                raise HTTPException(status_code=502, detail="GitHub user lookup failed.")
+            user_data = user_response.json()
+            email = user_data.get("email")
+            if not email:
+                emails_response = await client.get(
+                    config["emails_url"],
+                    headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                )
+                if emails_response.status_code >= 400:
+                    raise HTTPException(status_code=502, detail="GitHub email lookup failed.")
+                emails = emails_response.json()
+                primary = next(
+                    (item for item in emails if item.get("primary") and item.get("verified")), None
+                )
+                email = (primary or (emails[0] if emails else {})).get("email")
+            name = user_data.get("name") or user_data.get("login")
+        else:
+            user_response = await client.get(
+                config["userinfo_url"],
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if user_response.status_code >= 400:
+                raise HTTPException(status_code=502, detail="OAuth user lookup failed.")
+            user_data = user_response.json()
+            email = user_data.get("email")
+            name = user_data.get("name") or user_data.get("given_name")
+
+    if not email:
+        raise HTTPException(status_code=400, detail="OAuth provider did not return an email.")
+
+    user = _find_or_create_oauth_user(email, name)
+    session = _create_session(user)
+    token = _encode_token(session)
+
+    redirect_url = urlparse(FRONTEND_OAUTH_REDIRECT)
+    query_params = dict(parse_qsl(redirect_url.query))
+    query_params.update({"token": token})
+    new_query = urlencode(query_params)
+    final_url = urlunparse(redirect_url._replace(query=new_query))
+    return RedirectResponse(url=final_url)
+
+
 @app.post("/state/update", response_model=StateUpdateResponse)
-def state_update(payload: StateUpdateRequest) -> StateUpdateResponse:
+def state_update(
+    payload: StateUpdateRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> StateUpdateResponse:
     new_state = update_emotion_state(payload.current_state, payload.traits, payload.event)
     return StateUpdateResponse(
         new_state=new_state,
@@ -590,7 +1017,11 @@ def state_update(payload: StateUpdateRequest) -> StateUpdateResponse:
 
 
 @app.post("/response", response_model=LocalResponseResponse)
-def response_local(payload: LocalResponseRequest) -> LocalResponseResponse:
+def response_local(
+    payload: LocalResponseRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> LocalResponseResponse:
     if payload.used_external_lookup or payload.external_facts:
         raise HTTPException(
             status_code=400,
@@ -600,7 +1031,11 @@ def response_local(payload: LocalResponseRequest) -> LocalResponseResponse:
 
 
 @app.post("/lookup", response_model=LookupResponse)
-async def lookup_external(payload: LookupRequest) -> LookupResponse:
+async def lookup_external(
+    payload: LookupRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=20, window_seconds=60)),
+) -> LookupResponse:
     if payload.memory.store and not payload.memory.user_approved:
         raise HTTPException(
             status_code=400,
@@ -640,7 +1075,7 @@ async def lookup_external(payload: LookupRequest) -> LookupResponse:
             virtue_markers=payload.memory.virtue_markers,
             salience=payload.memory.salience,
         )
-        memory_id = _create_memory_record(memory_payload).metadata.memory_id
+        memory_id = _create_memory_record(user.user_id, memory_payload).metadata.memory_id
     log_record = LookupLogRecord(
         lookup_id=lookup_id,
         created_at=datetime.now(timezone.utc),
@@ -650,7 +1085,7 @@ async def lookup_external(payload: LookupRequest) -> LookupResponse:
         response_prefixed=prefixed_response,
         memory_id=memory_id,
     )
-    LOOKUP_LOGS.append(log_record)
+    _get_user_logs(user.user_id).append(log_record)
     _write_lookup_audit_log(log_record)
 
     return LookupResponse(
@@ -663,34 +1098,54 @@ async def lookup_external(payload: LookupRequest) -> LookupResponse:
 
 
 @app.get("/lookup/logs", response_model=LookupLogResponse)
-def lookup_logs() -> LookupLogResponse:
-    return LookupLogResponse(logs=LOOKUP_LOGS)
+def lookup_logs(
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=20, window_seconds=60)),
+) -> LookupLogResponse:
+    return LookupLogResponse(logs=_get_user_logs(user.user_id))
 
 
 @app.post("/memory", response_model=MemoryRecord)
 @app.post("/memory/add", response_model=MemoryRecord)
-def memory_add(payload: MemoryCreateRequest) -> MemoryRecord:
+def memory_add(
+    payload: MemoryCreateRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> MemoryRecord:
     _guard_external_source_tags(payload.source_tags)
-    return _create_memory_record(payload)
+    return _create_memory_record(user.user_id, payload)
 
 
 @app.get("/memory", response_model=MemoryListResponse)
 @app.get("/memory/list", response_model=MemoryListResponse)
-def memory_list() -> MemoryListResponse:
-    return MemoryListResponse(memories=list(MEMORY_STORE.values()))
+def memory_list(
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> MemoryListResponse:
+    return MemoryListResponse(memories=list(_get_user_store(user.user_id).values()))
 
 
 @app.get("/memory/{memory_id}", response_model=MemoryRecord)
-def memory_get(memory_id: str) -> MemoryRecord:
-    record = MEMORY_STORE.get(memory_id)
+def memory_get(
+    memory_id: str,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> MemoryRecord:
+    record = _get_user_store(user.user_id).get(memory_id)
     if not record:
         raise HTTPException(status_code=404, detail="Memory not found")
     return record
 
 
 @app.put("/memory/{memory_id}", response_model=MemoryRecord)
-def memory_update(memory_id: str, payload: MemoryUpdateRequest) -> MemoryRecord:
-    record = MEMORY_STORE.get(memory_id)
+def memory_update(
+    memory_id: str,
+    payload: MemoryUpdateRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> MemoryRecord:
+    user_store = _get_user_store(user.user_id)
+    record = user_store.get(memory_id)
     if not record:
         raise HTTPException(status_code=404, detail="Memory not found")
     updated_metadata = record.metadata.copy()
@@ -706,44 +1161,62 @@ def memory_update(memory_id: str, payload: MemoryUpdateRequest) -> MemoryRecord:
     updated_metadata.updated_at = datetime.now(timezone.utc)
     updated_content = payload.content if payload.content is not None else record.content
     updated_record = MemoryRecord(metadata=updated_metadata, content=updated_content)
-    MEMORY_STORE[memory_id] = updated_record
-    _rebuild_vector_index()
+    user_store[memory_id] = updated_record
+    _rebuild_vector_index(user.user_id)
     return updated_record
 
 
 @app.delete("/memory/{memory_id}")
-def memory_delete(memory_id: str) -> Dict[str, str]:
-    if memory_id not in MEMORY_STORE:
+def memory_delete(
+    memory_id: str,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> Dict[str, str]:
+    user_store = _get_user_store(user.user_id)
+    if memory_id not in user_store:
         raise HTTPException(status_code=404, detail="Memory not found")
-    del MEMORY_STORE[memory_id]
-    _rebuild_vector_index()
+    del user_store[memory_id]
+    _rebuild_vector_index(user.user_id)
     return {"status": "deleted", "memory_id": memory_id}
 
 
 @app.get("/memory/export/json", response_model=MemoryModule)
-def memory_export_json() -> MemoryModule:
-    return MemoryModule(memories=list(MEMORY_STORE.values()))
+def memory_export_json(
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
+) -> MemoryModule:
+    return MemoryModule(memories=list(_get_user_store(user.user_id).values()))
 
 
 @app.get("/memory/export/xml")
-def memory_export_xml() -> Response:
-    xml_payload = _memory_module_to_xml(list(MEMORY_STORE.values()))
+def memory_export_xml(
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
+) -> Response:
+    xml_payload = _memory_module_to_xml(list(_get_user_store(user.user_id).values()))
     return Response(content=xml_payload, media_type="application/xml")
 
 
 @app.post("/memory/import/json", response_model=MemoryImportResponse)
-def memory_import_json(payload: MemoryImportRequest, replace: bool = False) -> MemoryImportResponse:
+def memory_import_json(
+    payload: MemoryImportRequest,
+    replace: bool = False,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
+) -> MemoryImportResponse:
     if replace:
-        reset_memory_store()
+        reset_memory_store(user.user_id)
     memory_ids: List[str] = []
+    user_store = _get_user_store(user.user_id)
     for record in payload.memories:
         _guard_external_source_tags(record.metadata.source_tags)
         memory_id = record.metadata.memory_id
-        if memory_id and memory_id in MEMORY_STORE:
+        if memory_id and memory_id in user_store:
             memory_id = None
         created_at = record.metadata.created_at
         updated_at = record.metadata.updated_at
         created_record = _create_memory_record(
+            user.user_id,
             MemoryCreateRequest(
                 content=record.content,
                 tags=record.metadata.tags,
@@ -763,17 +1236,21 @@ def memory_import_json(payload: MemoryImportRequest, replace: bool = False) -> M
 def memory_import_xml(
     xml_payload: str = Body(..., media_type="application/xml"),
     replace: bool = False,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> MemoryImportResponse:
     if replace:
-        reset_memory_store()
+        reset_memory_store(user.user_id)
     records = _parse_memory_module_xml(xml_payload)
     memory_ids: List[str] = []
+    user_store = _get_user_store(user.user_id)
     for record in records:
         _guard_external_source_tags(record.source_tags)
         memory_id = record.memory_id
-        if memory_id and memory_id in MEMORY_STORE:
+        if memory_id and memory_id in user_store:
             memory_id = None
         created_record = _create_memory_record(
+            user.user_id,
             MemoryCreateRequest(
                 content=record.content,
                 tags=record.tags,
