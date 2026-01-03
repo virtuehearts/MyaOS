@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import base64
 import hashlib
 import hmac
 import json
@@ -8,7 +10,7 @@ import os
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 import uuid
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
@@ -141,6 +143,99 @@ class MemoryImportRequest(BaseModel):
 class MemoryImportResponse(BaseModel):
     imported: int
     memory_ids: List[str]
+
+
+class UserProfile(BaseModel):
+    user_id: str
+    email: str
+    name: Optional[str] = None
+    created_at: datetime
+
+
+class AuthRegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+
+
+class AuthLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: UserProfile
+    expires_at: datetime
+
+
+class AuthMeResponse(BaseModel):
+    user: UserProfile
+
+
+class OAuthStartRequest(BaseModel):
+    provider: str
+
+
+class OAuthStartResponse(BaseModel):
+    provider: str
+    auth_url: str
+    state: str
+
+
+class AppRegistryItem(BaseModel):
+    id: str
+    name: str
+    description: str
+    icon: str
+    endpoint: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    timestamp: datetime
+
+
+class CalculatorRequest(BaseModel):
+    expression: str
+
+
+class CalculatorResponse(BaseModel):
+    expression: str
+    result: float
+
+
+class ImageEditorRequest(BaseModel):
+    asset: str
+    action: str
+
+
+class ImageEditorResponse(BaseModel):
+    status: str
+    pipeline: List[str]
+
+
+class CalendarEvent(BaseModel):
+    id: str
+    title: str
+    time: str
+    location: str
+
+
+class CalendarResponse(BaseModel):
+    events: List[CalendarEvent]
+
+
+class SSHRequest(BaseModel):
+    command: str
+
+
+class SSHResponse(BaseModel):
+    output: str
 
 
 class LocalResponseRequest(BaseModel):
@@ -318,6 +413,186 @@ class RateLimiter:
 
 
 RATE_LIMITER = RateLimiter()
+USER_MEMORY_STORE: Dict[str, Dict[str, MemoryRecord]] = {}
+USER_LOOKUP_LOGS: Dict[str, List[LookupLogRecord]] = {}
+VECTOR_INDEX: Dict[str, FAISS] = {}
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _hash_password(password: str, salt: Optional[str] = None) -> PasswordRecord:
+    resolved_salt = salt or secrets.token_hex(8)
+    digest = hashlib.sha256(f"{resolved_salt}{password}".encode("utf-8")).hexdigest()
+    return PasswordRecord(salt=resolved_salt, digest=digest)
+
+
+def _verify_password(password: str, record: PasswordRecord) -> bool:
+    digest = hashlib.sha256(f"{record.salt}{password}".encode("utf-8")).hexdigest()
+    return hmac.compare_digest(digest, record.digest)
+
+
+def _create_user(email: str, name: Optional[str], password: Optional[str]) -> UserProfile:
+    normalized = _normalize_email(email)
+    if normalized in USERS_BY_EMAIL:
+        raise HTTPException(status_code=400, detail="Email is already registered.")
+    user = UserProfile(
+        user_id=uuid.uuid4().hex,
+        email=normalized,
+        name=name,
+        created_at=datetime.now(timezone.utc),
+    )
+    USERS_BY_EMAIL[normalized] = user
+    USERS_BY_ID[user.user_id] = user
+    if password:
+        USER_PASSWORDS[user.user_id] = _hash_password(password)
+    return user
+
+
+def _find_or_create_oauth_user(email: str, name: Optional[str]) -> UserProfile:
+    normalized = _normalize_email(email)
+    existing = USERS_BY_EMAIL.get(normalized)
+    if existing:
+        if name and not existing.name:
+            existing.name = name
+        return existing
+    return _create_user(normalized, name=name, password=None)
+
+
+def _create_session(user: UserProfile) -> SessionRecord:
+    now = datetime.now(timezone.utc)
+    session = SessionRecord(
+        session_id=uuid.uuid4().hex,
+        user_id=user.user_id,
+        created_at=now,
+        expires_at=now + timedelta(minutes=AUTH_SESSION_TTL_MINUTES),
+    )
+    SESSIONS[session.session_id] = session
+    return session
+
+
+def _encode_token(session: SessionRecord) -> str:
+    payload = {
+        "session_id": session.session_id,
+        "user_id": session.user_id,
+        "exp": int(session.expires_at.timestamp()),
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    b64_payload = base64.urlsafe_b64encode(payload_bytes).decode("utf-8").rstrip("=")
+    signature = hmac.new(
+        AUTH_SECRET.encode("utf-8"),
+        b64_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{b64_payload}.{signature}"
+
+
+def _decode_token(token: str) -> Dict[str, object]:
+    try:
+        b64_payload, signature = token.split(".", 1)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid auth token.") from exc
+    expected = hmac.new(
+        AUTH_SECRET.encode("utf-8"),
+        b64_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Invalid auth token.")
+    padded = b64_payload + "=" * (-len(b64_payload) % 4)
+    data = json.loads(base64.urlsafe_b64decode(padded))
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=401, detail="Invalid auth token payload.")
+    return data
+
+
+def _current_user(request: Request) -> UserProfile:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing auth token.")
+    token = auth_header.split(" ", 1)[1].strip()
+    payload = _decode_token(token)
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str):
+        raise HTTPException(status_code=401, detail="Invalid auth token payload.")
+    session = SESSIONS.get(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid auth session.")
+    if session.expires_at < datetime.now(timezone.utc):
+        SESSIONS.pop(session_id, None)
+        raise HTTPException(status_code=401, detail="Auth session expired.")
+    user = USERS_BY_ID.get(session.user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid auth user.")
+    return user
+
+
+def _rate_limit(scope: str, limit: int, window_seconds: int):
+    def _dependency(request: Request) -> None:
+        host = request.client.host if request.client else "unknown"
+        key = f"{scope}:{host}"
+        RATE_LIMITER.check(key, limit=limit, window_seconds=window_seconds)
+
+    return _dependency
+
+
+def _get_user_store(user_id: str) -> Dict[str, MemoryRecord]:
+    return USER_MEMORY_STORE.setdefault(user_id, {})
+
+
+def _get_user_logs(user_id: str) -> List[LookupLogRecord]:
+    return USER_LOOKUP_LOGS.setdefault(user_id, [])
+
+
+def _safe_calculate(expression: str) -> float:
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.Mod,
+        ast.USub,
+        ast.UAdd,
+        ast.Constant,
+    )
+
+    def _eval(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return _eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.BinOp):
+            left = _eval(node.left)
+            right = _eval(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left / right
+            if isinstance(node.op, ast.Pow):
+                return left**right
+            if isinstance(node.op, ast.Mod):
+                return left % right
+        if isinstance(node, ast.UnaryOp):
+            operand = _eval(node.operand)
+            if isinstance(node.op, ast.UAdd):
+                return +operand
+            if isinstance(node.op, ast.USub):
+                return -operand
+        raise ValueError("Unsupported expression.")
+
+    parsed = ast.parse(expression, mode="eval")
+    if not all(isinstance(node, allowed_nodes) for node in ast.walk(parsed)):
+        raise ValueError("Unsupported expression.")
+    return _eval(parsed)
 
 
 def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:

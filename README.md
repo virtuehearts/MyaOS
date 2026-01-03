@@ -90,6 +90,27 @@ npm install
 npm run dev
 ```
 
+## Testing
+Backend tests use `pytest`.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt pytest
+pytest backend/tests
+```
+
+Load tests for chat responsiveness are opt-in:
+
+```bash
+RUN_LOAD_TESTS=1 pytest backend/tests -m load
+```
+
+Optional tuning knobs:
+- `CHAT_LOAD_REQUESTS` (default: 40)
+- `CHAT_LOAD_WORKERS` (default: 4)
+- `CHAT_LOAD_MAX_SECONDS` (default: 10)
+
 ## Docker Deployment
 ### Local (Docker Compose)
 ```bash
