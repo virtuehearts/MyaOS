@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 import uuid
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
@@ -20,6 +22,31 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from pydantic import BaseModel, Field
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER")
+OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "MyaOS")
+LOOKUP_AUDIT_LOG_PATH = os.getenv("LOOKUP_AUDIT_LOG_PATH", "lookup_audit.log")
+LOOKED_UP_MARKER = "[LOOKED_UP]"
+EXTERNAL_LOOKUP_SOURCE_TAG = "external-lookup"
+AUTH_SECRET = os.getenv("AUTH_SECRET", "dev-secret-change-me")
+AUTH_SESSION_TTL_MINUTES = int(os.getenv("AUTH_SESSION_TTL_MINUTES", "120"))
+AUTH_STATE_TTL_SECONDS = int(os.getenv("AUTH_STATE_TTL_SECONDS", "600"))
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
+FRONTEND_OAUTH_REDIRECT = os.getenv(
+    "FRONTEND_OAUTH_REDIRECT", "http://localhost:3000/auth/callback"
+)
+OAUTH_REDIRECT_URI = os.getenv(
+    "OAUTH_REDIRECT_URI", "http://localhost:8000/auth/oauth/callback"
+)
+
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+LOGGER = logging.getLogger("myaos")
 
 app = FastAPI(title="MyaOS Backend", version="0.1.0")
 
@@ -172,24 +199,6 @@ class LookupLogResponse(BaseModel):
 
 
 
-OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER")
-OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "MyaOS")
-LOOKUP_AUDIT_LOG_PATH = os.getenv("LOOKUP_AUDIT_LOG_PATH", "lookup_audit.log")
-LOOKED_UP_MARKER = "[LOOKED_UP]"
-EXTERNAL_LOOKUP_SOURCE_TAG = "external-lookup"
-AUTH_SECRET = os.getenv("AUTH_SECRET", "dev-secret-change-me")
-AUTH_SESSION_TTL_MINUTES = int(os.getenv("AUTH_SESSION_TTL_MINUTES", "120"))
-AUTH_STATE_TTL_SECONDS = int(os.getenv("AUTH_STATE_TTL_SECONDS", "600"))
-FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
-FRONTEND_OAUTH_REDIRECT = os.getenv(
-    "FRONTEND_OAUTH_REDIRECT", "http://localhost:3000/auth/callback"
-)
-OAUTH_REDIRECT_URI = os.getenv(
-    "OAUTH_REDIRECT_URI", "http://localhost:8000/auth/oauth/callback"
-)
-
 APP_REGISTRY = [
     {
         "id": "chat",
@@ -315,6 +324,52 @@ def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> floa
     return max(min_value, min(max_value, value))
 
 
+def _memory_stats(user_store: Dict[str, MemoryRecord]) -> Tuple[int, int]:
+    record_count = len(user_store)
+    content_bytes = sum(
+        len(record.content.encode("utf-8")) for record in user_store.values()
+    )
+    return record_count, content_bytes
+
+
+def _log_memory_event(
+    action: str,
+    user_id: str,
+    user_store: Dict[str, MemoryRecord],
+    memory_id: Optional[str] = None,
+    detail: Optional[str] = None,
+) -> None:
+    record_count, content_bytes = _memory_stats(user_store)
+    LOGGER.info(
+        "memory_event action=%s user_id=%s memory_id=%s record_count=%s content_bytes=%s detail=%s",
+        action,
+        user_id,
+        memory_id or "-",
+        record_count,
+        content_bytes,
+        detail or "-",
+    )
+
+
+def _log_state_transition(
+    user_id: str,
+    event: str,
+    current_state: EmotionState,
+    new_state: EmotionState,
+) -> None:
+    LOGGER.info(
+        "state_transition user_id=%s event=%s current=(%.3f,%.3f,%.3f) new=(%.3f,%.3f,%.3f)",
+        user_id,
+        event,
+        current_state.valence,
+        current_state.arousal,
+        current_state.dominance,
+        new_state.valence,
+        new_state.arousal,
+        new_state.dominance,
+    )
+
+
 
 
 def _deterministic_event_signal(event: str) -> float:
@@ -388,8 +443,10 @@ def _index_record(user_id: str, record: MemoryRecord) -> None:
 
 
 def reset_memory_store(user_id: str) -> None:
-    _get_user_store(user_id).clear()
+    user_store = _get_user_store(user_id)
+    user_store.clear()
     _rebuild_vector_index(user_id)
+    _log_memory_event("reset", user_id, user_store)
 
 
 def _normalize_virtue_markers(markers: Dict[str, float]) -> Dict[str, float]:
@@ -632,6 +689,7 @@ def _create_memory_record(
     )
     user_store[record_id] = record
     _index_record(user_id, record)
+    _log_memory_event("create", user_id, user_store, memory_id=record_id)
     return record
 
 
@@ -866,6 +924,12 @@ def state_update(
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> StateUpdateResponse:
     new_state = update_emotion_state(payload.current_state, payload.traits, payload.event)
+    _log_state_transition(
+        user.user_id,
+        payload.event,
+        payload.current_state,
+        new_state,
+    )
     return StateUpdateResponse(
         new_state=new_state,
         explanation="Deterministic placeholder update based on traits and event signal.",
@@ -1019,6 +1083,7 @@ def memory_update(
     updated_record = MemoryRecord(metadata=updated_metadata, content=updated_content)
     user_store[memory_id] = updated_record
     _rebuild_vector_index(user.user_id)
+    _log_memory_event("update", user.user_id, user_store, memory_id=memory_id)
     return updated_record
 
 
@@ -1033,6 +1098,7 @@ def memory_delete(
         raise HTTPException(status_code=404, detail="Memory not found")
     del user_store[memory_id]
     _rebuild_vector_index(user.user_id)
+    _log_memory_event("delete", user.user_id, user_store, memory_id=memory_id)
     return {"status": "deleted", "memory_id": memory_id}
 
 
@@ -1085,6 +1151,12 @@ def memory_import_json(
             updated_at=updated_at,
         )
         memory_ids.append(created_record.metadata.memory_id)
+    _log_memory_event(
+        "import_json",
+        user.user_id,
+        user_store,
+        detail=f"imported={len(memory_ids)} replace={replace}",
+    )
     return MemoryImportResponse(imported=len(memory_ids), memory_ids=memory_ids)
 
 
@@ -1119,6 +1191,12 @@ def memory_import_xml(
             updated_at=record.updated_at,
         )
         memory_ids.append(created_record.metadata.memory_id)
+    _log_memory_event(
+        "import_xml",
+        user.user_id,
+        user_store,
+        detail=f"imported={len(memory_ids)} replace={replace}",
+    )
     return MemoryImportResponse(imported=len(memory_ids), memory_ids=memory_ids)
 
 

@@ -90,5 +90,37 @@ npm install
 npm run dev
 ```
 
+## Docker Deployment
+### Local (Docker Compose)
+```bash
+docker compose up --build
+```
+
+Services come up on:
+- Frontend: http://localhost:3000
+- Backend: http://localhost:8000
+- MySQL: localhost:3306
+
+To stop and remove local data:
+```bash
+docker compose down -v
+```
+
+### VPS (Docker Compose)
+Update the domain placeholders in `docker-compose.vps.yml` before deploying, then:
+```bash
+docker compose -f docker-compose.vps.yml up -d --build
+```
+
+### Resource Limits & Tuning Notes
+- Local Compose uses `mem_limit`/`cpus` to keep containers within workstation-friendly bounds.
+- VPS Compose uses `deploy.resources` limits/reservations (Swarm compatible); tune them based on the host size.
+- MySQL configuration lives in `mysql/my.cnf`. Increase `innodb_buffer_pool_size` and `innodb_log_file_size`
+  if the database grows or you have more memory available.
+- Backend logging includes memory events (create/update/delete/import/reset) and state transitions; view with:
+  ```bash
+  docker compose logs -f backend
+  ```
+
 ## Notes
 This repository focuses on the OS-like UI shell and experience design. Backend systems (auth, memory, persona, LLM routing) are planned and can be integrated on request. The long-term vision separates intrinsic memory (stable, earned context about the user) from any “looked up” knowledge (temporary, query-based context), keeping the companion’s local brain deterministic, culturally grounded, and aligned with Virtueism.
