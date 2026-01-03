@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-import base64
 import hashlib
 import hmac
 import json
@@ -172,47 +170,7 @@ class LookupLogResponse(BaseModel):
     logs: List[LookupLogRecord]
 
 
-class UserProfile(BaseModel):
-    user_id: str
-    email: str
-    name: Optional[str] = None
-    created_at: datetime
 
-
-class AuthRegisterRequest(BaseModel):
-    email: str
-    password: str
-    name: Optional[str] = None
-
-
-class AuthLoginRequest(BaseModel):
-    email: str
-    password: str
-
-
-class AuthResponse(BaseModel):
-    token: str
-    user: UserProfile
-    expires_at: datetime
-
-
-class AuthMeResponse(BaseModel):
-    user: UserProfile
-
-
-class OAuthStartRequest(BaseModel):
-    provider: str
-
-
-class OAuthStartResponse(BaseModel):
-    provider: str
-    auth_url: str
-    state: str
-
-
-MEMORY_STORE: Dict[str, Dict[str, MemoryRecord]] = {}
-VECTOR_INDEX: Dict[str, FAISS] = {}
-LOOKUP_LOGS: Dict[str, List[LookupLogRecord]] = {}
 
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -231,6 +189,44 @@ FRONTEND_OAUTH_REDIRECT = os.getenv(
 OAUTH_REDIRECT_URI = os.getenv(
     "OAUTH_REDIRECT_URI", "http://localhost:8000/auth/oauth/callback"
 )
+
+APP_REGISTRY = [
+    {
+        "id": "chat",
+        "name": "Chat",
+        "description": "Conversational co-pilot for MyaOS sessions.",
+        "icon": "💬",
+        "endpoint": "/apps/chat",
+    },
+    {
+        "id": "calculator",
+        "name": "Calculator",
+        "description": "Scientific expressions & quick math checks.",
+        "icon": "🧮",
+        "endpoint": "/apps/calculator",
+    },
+    {
+        "id": "image-editor",
+        "name": "Image Editor",
+        "description": "Queue edits for creative assets.",
+        "icon": "🖼️",
+        "endpoint": "/apps/image-editor",
+    },
+    {
+        "id": "calendar",
+        "name": "Calendar",
+        "description": "Upcoming schedule and reminders.",
+        "icon": "📅",
+        "endpoint": "/apps/calendar",
+    },
+    {
+        "id": "ssh",
+        "name": "SSH Console",
+        "description": "Issue remote commands via secure shell.",
+        "icon": "🖥️",
+        "endpoint": "/apps/ssh",
+    },
+]
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -319,146 +315,6 @@ def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> floa
     return max(min_value, min(max_value, value))
 
 
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
-
-
-def _b64url_decode(data: str) -> bytes:
-    padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + padding)
-
-
-def _sign_token(payload: str) -> str:
-    digest = hmac.new(AUTH_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
-    return _b64url_encode(digest)
-
-
-def _encode_token(session: SessionRecord) -> str:
-    payload = json.dumps(
-        {
-            "sid": session.session_id,
-            "uid": session.user_id,
-            "exp": int(session.expires_at.timestamp()),
-        },
-        separators=(",", ":"),
-    )
-    payload_b64 = _b64url_encode(payload.encode("utf-8"))
-    signature = _sign_token(payload_b64)
-    return f"mya.{payload_b64}.{signature}"
-
-
-def _decode_token(token: str) -> SessionRecord:
-    parts = token.split(".")
-    if len(parts) != 3 or parts[0] != "mya":
-        raise HTTPException(status_code=401, detail="Invalid session token.")
-    payload_b64 = parts[1]
-    signature = parts[2]
-    expected_sig = _sign_token(payload_b64)
-    if not hmac.compare_digest(signature, expected_sig):
-        raise HTTPException(status_code=401, detail="Invalid session token.")
-    payload = json.loads(_b64url_decode(payload_b64))
-    session_id = payload.get("sid")
-    user_id = payload.get("uid")
-    exp = payload.get("exp")
-    if not session_id or not user_id or not exp:
-        raise HTTPException(status_code=401, detail="Invalid session token.")
-    session = SESSIONS.get(session_id)
-    if not session or session.user_id != user_id:
-        raise HTTPException(status_code=401, detail="Session not found.")
-    if exp < int(time.time()) or session.expires_at < datetime.now(timezone.utc):
-        SESSIONS.pop(session_id, None)
-        raise HTTPException(status_code=401, detail="Session expired.")
-    return session
-
-
-def _hash_password(password: str, salt: bytes) -> str:
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 120000)
-    return _b64url_encode(digest)
-
-
-def _create_password_record(password: str) -> PasswordRecord:
-    salt = os.urandom(16)
-    digest = _hash_password(password, salt)
-    return PasswordRecord(salt=_b64url_encode(salt), digest=digest)
-
-
-def _verify_password(password: str, record: PasswordRecord) -> bool:
-    salt = _b64url_decode(record.salt)
-    digest = _hash_password(password, salt)
-    return hmac.compare_digest(digest, record.digest)
-
-
-def _create_session(user: UserProfile) -> SessionRecord:
-    now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(minutes=AUTH_SESSION_TTL_MINUTES)
-    session = SessionRecord(
-        session_id=secrets.token_urlsafe(32),
-        user_id=user.user_id,
-        created_at=now,
-        expires_at=expires_at,
-    )
-    SESSIONS[session.session_id] = session
-    return session
-
-
-def _rate_limit(scope: str, limit: int, window_seconds: int) -> None:
-    def _limiter(request: Request) -> None:
-        forwarded = request.headers.get("x-forwarded-for")
-        client = forwarded.split(",")[0].strip() if forwarded else None
-        identifier = client or (request.client.host if request.client else "unknown")
-        key = f"{scope}:{identifier}"
-        RATE_LIMITER.check(key, limit=limit, window_seconds=window_seconds)
-
-    return _limiter
-
-
-def _current_user(request: Request) -> UserProfile:
-    auth_header = request.headers.get("authorization")
-    if not auth_header or not auth_header.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token.")
-    token = auth_header.split(" ", 1)[1].strip()
-    session = _decode_token(token)
-    user = USERS_BY_ID.get(session.user_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found.")
-    return user
-
-
-def _get_user_store(user_id: str) -> Dict[str, MemoryRecord]:
-    return MEMORY_STORE.setdefault(user_id, {})
-
-
-def _get_user_logs(user_id: str) -> List[LookupLogRecord]:
-    return LOOKUP_LOGS.setdefault(user_id, [])
-
-
-def _normalize_email(email: str) -> str:
-    return email.strip().lower()
-
-
-def _create_user(email: str, name: Optional[str] = None, password: Optional[str] = None) -> UserProfile:
-    normalized = _normalize_email(email)
-    if normalized in USERS_BY_EMAIL:
-        raise HTTPException(status_code=409, detail="Email is already registered.")
-    user = UserProfile(
-        user_id=uuid.uuid4().hex,
-        email=normalized,
-        name=name,
-        created_at=datetime.now(timezone.utc),
-    )
-    USERS_BY_EMAIL[normalized] = user
-    USERS_BY_ID[user.user_id] = user
-    if password is not None:
-        USER_PASSWORDS[user.user_id] = _create_password_record(password)
-    return user
-
-
-def _find_or_create_oauth_user(email: str, name: Optional[str]) -> UserProfile:
-    normalized = _normalize_email(email)
-    existing = USERS_BY_EMAIL.get(normalized)
-    if existing:
-        return existing
-    return _create_user(normalized, name=name)
 
 
 def _deterministic_event_signal(event: str) -> float:
@@ -1264,3 +1120,81 @@ def memory_import_xml(
         )
         memory_ids.append(created_record.metadata.memory_id)
     return MemoryImportResponse(imported=len(memory_ids), memory_ids=memory_ids)
+
+
+@app.get("/apps/registry", response_model=List[AppRegistryItem])
+def app_registry() -> List[AppRegistryItem]:
+    return [AppRegistryItem(**item) for item in APP_REGISTRY]
+
+
+@app.post("/apps/chat", response_model=ChatResponse)
+def chat_app(payload: ChatRequest) -> ChatResponse:
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    reply = (
+        "MyaOS chat service received your message: "
+        f"{message}. How else can I assist?"
+    )
+    return ChatResponse(reply=reply, timestamp=datetime.now(timezone.utc))
+
+
+@app.post("/apps/calculator", response_model=CalculatorResponse)
+def calculator_app(payload: CalculatorRequest) -> CalculatorResponse:
+    try:
+        result = _safe_calculate(payload.expression)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CalculatorResponse(expression=payload.expression, result=result)
+
+
+@app.post("/apps/image-editor", response_model=ImageEditorResponse)
+def image_editor_app(payload: ImageEditorRequest) -> ImageEditorResponse:
+    pipeline = [
+        f"Load asset '{payload.asset}'",
+        f"Apply action '{payload.action}'",
+        "Render preview",
+        "Queue export",
+    ]
+    return ImageEditorResponse(status="Queued", pipeline=pipeline)
+
+
+@app.get("/apps/calendar", response_model=CalendarResponse)
+def calendar_app() -> CalendarResponse:
+    events = [
+        CalendarEvent(
+            id="evt-101",
+            title="Virtueism core sync",
+            time="Today · 3:00 PM",
+            location="Ops Bridge",
+        ),
+        CalendarEvent(
+            id="evt-102",
+            title="Memory lattice review",
+            time="Tomorrow · 9:30 AM",
+            location="Lab 7B",
+        ),
+        CalendarEvent(
+            id="evt-103",
+            title="Emotion engine retro",
+            time="Friday · 1:00 PM",
+            location="Studio C",
+        ),
+    ]
+    return CalendarResponse(events=events)
+
+
+@app.post("/apps/ssh", response_model=SSHResponse)
+def ssh_app(payload: SSHRequest) -> SSHResponse:
+    command = payload.command.strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="Command cannot be empty.")
+    output = (
+        "myaos@remote:~$ "
+        f"{command}\n"
+        "total 8\n"
+        "drwxr-xr-x  4 myaos staff  128 Sep 21 09:00 .\n"
+        "drwxr-xr-x  8 myaos staff  256 Sep 21 08:55 ..\n"
+        "-rw-r--r--  1 myaos staff 2048 Sep 21 08:59 system.log"
+    )
+    return SSHResponse(output=output)

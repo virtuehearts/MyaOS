@@ -174,7 +174,7 @@ button.ghost {
   display: flex;
   flex-direction: column;
   gap: 24px;
-  padding: 24px;
+  padding: 24px 24px 88px;
 }
 
 .top-bar {
@@ -223,7 +223,231 @@ button.ghost {
   flex: 1;
 }
 
-.dag-panel {
+.desktop-panel {
+  background: rgba(10, 14, 30, 0.85);
+  border-radius: 20px;
+  border: 1px solid #26315a;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.desktop-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.window-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 20px;
+}
+
+.empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 40px;
+  border-radius: 16px;
+  border: 1px dashed #2b3766;
+  background: rgba(7, 10, 24, 0.6);
+  color: #a4b4e5;
+}
+
+.app-window {
+  background: rgba(13, 18, 36, 0.95);
+  border-radius: 18px;
+  border: 1px solid #2a3764;
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+}
+
+.app-window.active {
+  border-color: #5b7bff;
+  box-shadow: 0 20px 45px rgba(91, 123, 255, 0.25);
+}
+
+.window-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 16px 18px 8px;
+  border-bottom: 1px solid #223059;
+  gap: 12px;
+}
+
+.window-title {
+  display: flex;
+  gap: 12px;
+}
+
+.window-title h3 {
+  margin: 0;
+}
+
+.window-title p {
+  margin: 4px 0 0;
+  color: #93a4d9;
+  font-size: 0.85rem;
+}
+
+.window-icon {
+  font-size: 1.6rem;
+}
+
+.window-close {
+  background: transparent;
+  border: none;
+  color: #9fb0e8;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.window-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+}
+
+.window-footer {
+  border-top: 1px solid #223059;
+  padding: 12px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #9fb0e8;
+}
+
+.window-footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.window-status {
+  font-size: 0.85rem;
+}
+
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.chat-bubble {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(20, 26, 48, 0.8);
+}
+
+.chat-bubble.user {
+  background: rgba(91, 123, 255, 0.2);
+  border: 1px solid rgba(91, 123, 255, 0.5);
+}
+
+.chat-bubble strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #c9d5ff;
+}
+
+.chat-input {
+  display: flex;
+  gap: 12px;
+}
+
+.calculator-form,
+.image-editor-form,
+.ssh-form {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.image-editor-form label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #c0cdf7;
+}
+
+.image-editor-form select {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #2c375f;
+  background: #0e1327;
+  color: #e6e9f5;
+}
+
+.calculator-output {
+  background: rgba(7, 10, 24, 0.7);
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid #1b2445;
+}
+
+.calculator-output .label,
+.pipeline-list .label {
+  margin: 0 0 8px;
+  color: #9fb0e8;
+}
+
+.calculator-output .value {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.pipeline-list ul {
+  padding-left: 18px;
+  margin: 0;
+}
+
+.calendar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.calendar-card {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid #2c375f;
+  background: rgba(12, 16, 34, 0.9);
+}
+
+.calendar-card h4 {
+  margin: 0 0 6px;
+}
+
+.ssh-output {
+  background: #0a0f22;
+  border-radius: 12px;
+  border: 1px solid #1b2445;
+  padding: 12px;
+  min-height: 120px;
+  color: #c9d5ff;
+  overflow-x: auto;
+}
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.system-panel {
   background: rgba(12, 16, 34, 0.9);
   border-radius: 20px;
   border: 1px solid #26315a;
@@ -241,17 +465,11 @@ button.ghost {
 
 .dag-container {
   flex: 1;
-  min-height: 420px;
+  min-height: 320px;
   background: rgba(7, 10, 24, 0.8);
   border-radius: 16px;
   border: 1px solid #1b2445;
   overflow: hidden;
-}
-
-.side-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
 }
 
 .config-panel,
@@ -266,8 +484,126 @@ button.ghost {
   padding-left: 18px;
 }
 
+.taskbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 24px;
+  background: rgba(9, 12, 26, 0.95);
+  border-top: 1px solid #232f59;
+  z-index: 10;
+}
+
+.taskbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+}
+
+.start-button {
+  background: #5b7bff;
+  border: none;
+  color: #fff;
+  border-radius: 12px;
+  padding: 8px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.taskbar-apps {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.taskbar-app {
+  background: rgba(20, 26, 48, 0.8);
+  border: 1px solid #2c375f;
+  color: #c9d5ff;
+  border-radius: 12px;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.taskbar-app.active {
+  border-color: #5b7bff;
+  color: #fff;
+}
+
+.taskbar-right {
+  min-width: 120px;
+  text-align: right;
+}
+
+.start-menu {
+  position: absolute;
+  left: 24px;
+  bottom: 62px;
+  width: min(320px, 90vw);
+  background: rgba(12, 16, 34, 0.98);
+  border: 1px solid #26315a;
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+
+.start-menu h4 {
+  margin-top: 0;
+}
+
+.start-menu ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.start-menu li button {
+  width: 100%;
+  background: transparent;
+  border: 1px solid #2c375f;
+  border-radius: 12px;
+  padding: 10px;
+  color: #e6e9f5;
+  display: flex;
+  gap: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.start-menu li button span {
+  display: block;
+  color: #9fb0e8;
+  font-size: 0.8rem;
+}
+
+.menu-icon {
+  font-size: 1.4rem;
+}
+}
+
 @media (max-width: 960px) {
   .os-main {
     grid-template-columns: 1fr;
+  }
+
+  .taskbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .taskbar-right {
+    text-align: left;
   }
 }
