@@ -64,7 +64,7 @@ export function OsShell() {
 
   return (
     <div
-      className="relative min-h-screen overflow-hidden bg-retro-bg p-6"
+      className="relative min-h-[100dvh] w-full overflow-hidden bg-retro-bg p-6"
       style={
         desktopBackground
           ? {
