@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import type { OpenRouterChatOptions } from '@/lib/openrouter';
 import { createOpenRouterChatCompletion } from '@/lib/openrouter';
 import { useApiKeyStore } from '@/store/apiKeyStore';
 import { useChatStore } from '@/store/chatStore';
@@ -29,6 +30,9 @@ export function ChatWindow() {
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [lastRequest, setLastRequest] = useState<OpenRouterChatOptions | null>(
+    null
+  );
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const hasApiKey = Boolean(apiKey);
@@ -44,14 +48,33 @@ export function ChatWindow() {
     return memory.map((item) => `• ${item.content}`).join('\n');
   }, [memory, useMemory]);
 
+  const submitRequest = async (request: OpenRouterChatOptions) => {
+    setStatus('sending');
+    setError(null);
+
+    try {
+      const response = await createOpenRouterChatCompletion(request);
+
+      addMessage({
+        id: makeId(),
+        role: 'assistant',
+        content: response || '...thinking...',
+        createdAt: Date.now()
+      });
+      setStatus('idle');
+      setLastRequest(null);
+    } catch (err) {
+      setStatus('error');
+      setError(err instanceof Error ? err.message : 'Unable to reach OpenRouter.');
+    }
+  };
+
   const handleSend = async () => {
     const trimmed = draft.trim();
     if (!trimmed || status === 'sending') {
       return;
     }
 
-    setError(null);
-    setStatus('sending');
     const userMessage = {
       id: makeId(),
       role: 'user' as const,
@@ -61,40 +84,37 @@ export function ChatWindow() {
     addMessage(userMessage);
     setDraft('');
 
-    try {
-      const openRouterMessages = [
-        ...(systemMemory
-          ? [
-              {
-                role: 'system' as const,
-                content: `Memory context:\n${systemMemory}`
-              }
-            ]
-          : []),
-        ...messages.map((message) => ({
-          role: message.role,
-          content: message.content
-        })),
-        { role: 'user' as const, content: trimmed }
-      ];
+    const openRouterMessages = [
+      ...(systemMemory
+        ? [
+            {
+              role: 'system' as const,
+              content: `Memory context:\n${systemMemory}`
+            }
+          ]
+        : []),
+      ...messages.map((message) => ({
+        role: message.role,
+        content: message.content
+      })),
+      { role: 'user' as const, content: trimmed }
+    ];
 
-      const response = await createOpenRouterChatCompletion({
-        model,
-        temperature,
-        messages: openRouterMessages
-      });
+    const request = {
+      model,
+      temperature,
+      messages: openRouterMessages
+    };
 
-      addMessage({
-        id: makeId(),
-        role: 'assistant',
-        content: response || '...thinking...',
-        createdAt: Date.now()
-      });
-      setStatus('idle');
-    } catch (err) {
-      setStatus('error');
-      setError(err instanceof Error ? err.message : 'Unable to reach OpenRouter.');
+    setLastRequest(request);
+    await submitRequest(request);
+  };
+
+  const handleRetry = async () => {
+    if (!lastRequest || status === 'sending') {
+      return;
     }
+    await submitRequest(lastRequest);
   };
 
   return (
@@ -146,10 +166,35 @@ export function ChatWindow() {
             {status === 'sending' && (
               <div className="text-xs text-retro-accent">Mya is thinking…</div>
             )}
-            {error && <div className="text-xs text-red-200">Error: {error}</div>}
             <div ref={bottomRef} />
           </div>
         </ScrollArea>
+        {error && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-red-300/50 bg-red-950/40 px-3 py-2 text-xs text-red-100">
+            <span>Request failed: {error}</span>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                onClick={() => void handleRetry()}
+                disabled={!lastRequest || status === 'sending'}
+                className="h-7 px-2 text-[11px]"
+              >
+                Retry
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setError(null);
+                  setStatus('idle');
+                }}
+                className="h-7 px-2 text-[11px]"
+              >
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        )}
         <div className="flex gap-2">
           <Input
             placeholder="Share your thoughts with Mya..."
