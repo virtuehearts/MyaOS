@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import base64
+from contextlib import contextmanager
 import hashlib
 import hmac
 import json
@@ -11,7 +12,7 @@ import re
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import uuid
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 import xml.etree.ElementTree as ET
@@ -23,6 +24,7 @@ import httpx
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
+import pymysql
 from pydantic import BaseModel, Field
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -43,6 +45,11 @@ FRONTEND_OAUTH_REDIRECT = os.getenv(
 OAUTH_REDIRECT_URI = os.getenv(
     "OAUTH_REDIRECT_URI", "http://localhost:8000/auth/oauth/callback"
 )
+MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "myaos")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "myaos_password")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "myaos")
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -413,9 +420,9 @@ class RateLimiter:
 
 
 RATE_LIMITER = RateLimiter()
-USER_MEMORY_STORE: Dict[str, Dict[str, MemoryRecord]] = {}
 USER_LOOKUP_LOGS: Dict[str, List[LookupLogRecord]] = {}
 VECTOR_INDEX: Dict[str, FAISS] = {}
+VECTOR_INDEX_KEY = "global"
 
 
 def _normalize_email(email: str) -> str:
@@ -537,8 +544,142 @@ def _rate_limit(scope: str, limit: int, window_seconds: int):
     return _dependency
 
 
+@contextmanager
+def _db_connection():
+    connection = pymysql.connect(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DATABASE,
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
+    )
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _fetch_tag_map(
+    cursor: pymysql.cursors.DictCursor,
+    table: str,
+    column: str,
+    memory_ids: Sequence[int],
+) -> Dict[int, List[str]]:
+    if not memory_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(memory_ids))
+    cursor.execute(
+        f"SELECT memory_id, {column} FROM {table} WHERE memory_id IN ({placeholders})",
+        list(memory_ids),
+    )
+    results: Dict[int, List[str]] = {}
+    for row in cursor.fetchall():
+        results.setdefault(row["memory_id"], []).append(row[column])
+    return results
+
+
+def _fetch_virtue_map(
+    cursor: pymysql.cursors.DictCursor,
+    memory_ids: Sequence[int],
+) -> Dict[int, Dict[str, float]]:
+    if not memory_ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(memory_ids))
+    cursor.execute(
+        f"""
+        SELECT memory_id, virtue_name, virtue_score
+        FROM memory_virtue_markers
+        WHERE memory_id IN ({placeholders})
+        """,
+        list(memory_ids),
+    )
+    results: Dict[int, Dict[str, float]] = {}
+    for row in cursor.fetchall():
+        results.setdefault(row["memory_id"], {})[row["virtue_name"]] = float(
+            row["virtue_score"]
+        )
+    return results
+
+
+def _rows_to_memory_records(rows: Sequence[Dict[str, object]]) -> List[MemoryRecord]:
+    if not rows:
+        return []
+    memory_ids = [row["id"] for row in rows]
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            tags_by_id = _fetch_tag_map(cursor, "memory_tags", "tag", memory_ids)
+            sources_by_id = _fetch_tag_map(
+                cursor, "memory_sources", "source_tag", memory_ids
+            )
+            virtues_by_id = _fetch_virtue_map(cursor, memory_ids)
+
+    records: List[MemoryRecord] = []
+    for row in rows:
+        memory_id = row["memory_id"]
+        record_id = row["id"]
+        created_at = _as_utc(row["created_at"])
+        updated_at = row.get("updated_at")
+        updated_at_value = _as_utc(updated_at) if updated_at else None
+        records.append(
+            MemoryRecord(
+                metadata=MemoryMetadata(
+                    memory_id=memory_id,
+                    created_at=created_at,
+                    updated_at=updated_at_value,
+                    tags=tags_by_id.get(record_id, []),
+                    source_tags=sources_by_id.get(record_id, []),
+                    virtue_markers=virtues_by_id.get(record_id, {}),
+                    salience=float(row["salience"]),
+                ),
+                content=row["content"],
+            )
+        )
+    return records
+
+
+def _fetch_memory_rows(memory_id: Optional[str] = None) -> List[Dict[str, object]]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            if memory_id:
+                cursor.execute(
+                    """
+                    SELECT id, memory_id, content, salience, created_at, updated_at
+                    FROM memories
+                    WHERE memory_id = %s
+                    """,
+                    (memory_id,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, memory_id, content, salience, created_at, updated_at
+                    FROM memories
+                    ORDER BY created_at ASC, id ASC
+                    """
+                )
+            return cursor.fetchall()
+
+
+def _fetch_memory_record(memory_id: str) -> Optional[MemoryRecord]:
+    rows = _fetch_memory_rows(memory_id=memory_id)
+    records = _rows_to_memory_records(rows)
+    return records[0] if records else None
+
+
+def _fetch_all_memories() -> List[MemoryRecord]:
+    return _rows_to_memory_records(_fetch_memory_rows())
+
+
 def _get_user_store(user_id: str) -> Dict[str, MemoryRecord]:
-    return USER_MEMORY_STORE.setdefault(user_id, {})
+    return {record.metadata.memory_id: record for record in _fetch_all_memories()}
 
 
 def _get_user_logs(user_id: str) -> List[LookupLogRecord]:
@@ -599,22 +740,29 @@ def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> floa
     return max(min_value, min(max_value, value))
 
 
-def _memory_stats(user_store: Dict[str, MemoryRecord]) -> Tuple[int, int]:
-    record_count = len(user_store)
-    content_bytes = sum(
-        len(record.content.encode("utf-8")) for record in user_store.values()
-    )
+def _memory_stats() -> Tuple[int, int]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS record_count,
+                       COALESCE(SUM(CHAR_LENGTH(content)), 0) AS content_bytes
+                FROM memories
+                """
+            )
+            row = cursor.fetchone()
+    record_count = int(row["record_count"])
+    content_bytes = int(row["content_bytes"] or 0)
     return record_count, content_bytes
 
 
 def _log_memory_event(
     action: str,
     user_id: str,
-    user_store: Dict[str, MemoryRecord],
     memory_id: Optional[str] = None,
     detail: Optional[str] = None,
 ) -> None:
-    record_count, content_bytes = _memory_stats(user_store)
+    record_count, content_bytes = _memory_stats()
     LOGGER.info(
         "memory_event action=%s user_id=%s memory_id=%s record_count=%s content_bytes=%s detail=%s",
         action,
@@ -673,11 +821,14 @@ def update_emotion_state(
     )
 
 
-def _generate_memory_id(user_store: Dict[str, MemoryRecord]) -> str:
-    index = len(user_store) + 1
+def _generate_memory_id(connection: pymysql.connections.Connection) -> str:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT memory_id FROM memories")
+        existing = {row["memory_id"] for row in cursor.fetchall()}
+    index = len(existing) + 1
     while True:
         memory_id = f"mem-{index:04d}"
-        if memory_id not in user_store:
+        if memory_id not in existing:
             return memory_id
         index += 1
 
@@ -695,33 +846,32 @@ def _make_document(record: MemoryRecord) -> Document:
     )
 
 
-def _rebuild_vector_index(user_id: str) -> None:
-    user_store = _get_user_store(user_id)
-    records = list(user_store.values())
+def _rebuild_vector_index() -> None:
+    records = _fetch_all_memories()
     if not records:
-        VECTOR_INDEX.pop(user_id, None)
+        VECTOR_INDEX.pop(VECTOR_INDEX_KEY, None)
         return
     documents = [_make_document(record) for record in records]
     ids = [record.metadata.memory_id for record in records]
-    VECTOR_INDEX[user_id] = FAISS.from_documents(documents, EMBEDDINGS, ids=ids)
+    VECTOR_INDEX[VECTOR_INDEX_KEY] = FAISS.from_documents(documents, EMBEDDINGS, ids=ids)
 
 
-def _index_record(user_id: str, record: MemoryRecord) -> None:
-    document = _make_document(record)
-    vector_index = VECTOR_INDEX.get(user_id)
+def _index_record(record: MemoryRecord) -> None:
+    vector_index = VECTOR_INDEX.get(VECTOR_INDEX_KEY)
     if vector_index is None:
-        VECTOR_INDEX[user_id] = FAISS.from_documents(
-            [document], EMBEDDINGS, ids=[record.metadata.memory_id]
-        )
+        _rebuild_vector_index()
     else:
+        document = _make_document(record)
         vector_index.add_documents([document], ids=[record.metadata.memory_id])
 
 
 def reset_memory_store(user_id: str) -> None:
-    user_store = _get_user_store(user_id)
-    user_store.clear()
-    _rebuild_vector_index(user_id)
-    _log_memory_event("reset", user_id, user_store)
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM memories")
+        connection.commit()
+    _rebuild_vector_index()
+    _log_memory_event("reset", user_id)
 
 
 def _normalize_virtue_markers(markers: Dict[str, float]) -> Dict[str, float]:
@@ -948,24 +1098,153 @@ def _create_memory_record(
     created_at: Optional[datetime] = None,
     updated_at: Optional[datetime] = None,
 ) -> MemoryRecord:
-    user_store = _get_user_store(user_id)
-    record_id = memory_id or _generate_memory_id(user_store)
+    created_at_value = created_at or datetime.now(timezone.utc)
+    updated_at_value = updated_at
+    virtue_markers = _normalize_virtue_markers(payload.virtue_markers)
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            record_id = memory_id or _generate_memory_id(connection)
+            cursor.execute(
+                """
+                INSERT INTO memories (memory_id, content, salience, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    record_id,
+                    payload.content,
+                    payload.salience,
+                    created_at_value,
+                    updated_at_value,
+                ),
+            )
+            memory_row_id = cursor.lastrowid
+            if payload.tags:
+                cursor.executemany(
+                    "INSERT INTO memory_tags (memory_id, tag) VALUES (%s, %s)",
+                    [(memory_row_id, tag) for tag in payload.tags],
+                )
+            if payload.source_tags:
+                cursor.executemany(
+                    "INSERT INTO memory_sources (memory_id, source_tag) VALUES (%s, %s)",
+                    [(memory_row_id, tag) for tag in payload.source_tags],
+                )
+            if virtue_markers:
+                cursor.executemany(
+                    """
+                    INSERT INTO memory_virtue_markers (memory_id, virtue_name, virtue_score)
+                    VALUES (%s, %s, %s)
+                    """,
+                    [
+                        (memory_row_id, name, score)
+                        for name, score in virtue_markers.items()
+                    ],
+                )
+        connection.commit()
     record = MemoryRecord(
         metadata=MemoryMetadata(
             memory_id=record_id,
-            created_at=created_at or datetime.now(timezone.utc),
+            created_at=_as_utc(created_at_value),
             tags=payload.tags,
             source_tags=payload.source_tags,
-            virtue_markers=_normalize_virtue_markers(payload.virtue_markers),
+            virtue_markers=virtue_markers,
             salience=payload.salience,
-            updated_at=updated_at,
+            updated_at=_as_utc(updated_at_value) if updated_at_value else None,
         ),
         content=payload.content,
     )
-    user_store[record_id] = record
-    _index_record(user_id, record)
-    _log_memory_event("create", user_id, user_store, memory_id=record_id)
+    _index_record(record)
+    _log_memory_event("create", user_id, memory_id=record_id)
     return record
+
+
+def _existing_memory_ids(memory_ids: Iterable[str]) -> set[str]:
+    ids = [memory_id for memory_id in memory_ids if memory_id]
+    if not ids:
+        return set()
+    placeholders = ",".join(["%s"] * len(ids))
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT memory_id FROM memories WHERE memory_id IN ({placeholders})",
+                ids,
+            )
+            return {row["memory_id"] for row in cursor.fetchall()}
+
+
+def _update_memory_record(
+    memory_id: str,
+    payload: MemoryUpdateRequest,
+) -> Optional[MemoryRecord]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, memory_id, content, salience, created_at, updated_at
+                FROM memories
+                WHERE memory_id = %s
+                """,
+                (memory_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            updated_content = payload.content if payload.content is not None else row["content"]
+            updated_salience = (
+                payload.salience if payload.salience is not None else float(row["salience"])
+            )
+            updated_at = datetime.now(timezone.utc)
+            cursor.execute(
+                """
+                UPDATE memories
+                SET content = %s, salience = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (updated_content, updated_salience, updated_at, row["id"]),
+            )
+            if payload.tags is not None:
+                cursor.execute("DELETE FROM memory_tags WHERE memory_id = %s", (row["id"],))
+                if payload.tags:
+                    cursor.executemany(
+                        "INSERT INTO memory_tags (memory_id, tag) VALUES (%s, %s)",
+                        [(row["id"], tag) for tag in payload.tags],
+                    )
+            if payload.source_tags is not None:
+                cursor.execute(
+                    "DELETE FROM memory_sources WHERE memory_id = %s", (row["id"],)
+                )
+                if payload.source_tags:
+                    cursor.executemany(
+                        "INSERT INTO memory_sources (memory_id, source_tag) VALUES (%s, %s)",
+                        [(row["id"], tag) for tag in payload.source_tags],
+                    )
+            if payload.virtue_markers is not None:
+                normalized = _normalize_virtue_markers(payload.virtue_markers)
+                cursor.execute(
+                    "DELETE FROM memory_virtue_markers WHERE memory_id = %s", (row["id"],)
+                )
+                if normalized:
+                    cursor.executemany(
+                        """
+                        INSERT INTO memory_virtue_markers
+                            (memory_id, virtue_name, virtue_score)
+                        VALUES (%s, %s, %s)
+                        """,
+                        [
+                            (row["id"], name, score)
+                            for name, score in normalized.items()
+                        ],
+                    )
+        connection.commit()
+    return _fetch_memory_record(memory_id)
+
+
+def _delete_memory_record(memory_id: str) -> bool:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM memories WHERE memory_id = %s", (memory_id,))
+            deleted = cursor.rowcount > 0
+        connection.commit()
+    return deleted
 
 
 def _memory_module_to_xml(memories: List[MemoryRecord]) -> str:
@@ -1031,6 +1310,14 @@ def _parse_memory_module_xml(xml_payload: str) -> List[MemoryImportRecord]:
             )
         )
     return records
+
+
+@app.on_event("startup")
+def _rehydrate_vector_index() -> None:
+    try:
+        _rebuild_vector_index()
+    except Exception as exc:
+        LOGGER.warning("Failed to rehydrate vector index: %s", exc)
 
 
 @app.get("/health")
@@ -1317,7 +1604,7 @@ def memory_list(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryListResponse:
-    return MemoryListResponse(memories=list(_get_user_store(user.user_id).values()))
+    return MemoryListResponse(memories=_fetch_all_memories())
 
 
 @app.get("/memory/{memory_id}", response_model=MemoryRecord)
@@ -1326,7 +1613,7 @@ def memory_get(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryRecord:
-    record = _get_user_store(user.user_id).get(memory_id)
+    record = _fetch_memory_record(memory_id)
     if not record:
         raise HTTPException(status_code=404, detail="Memory not found")
     return record
@@ -1339,26 +1626,13 @@ def memory_update(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryRecord:
-    user_store = _get_user_store(user.user_id)
-    record = user_store.get(memory_id)
-    if not record:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    updated_metadata = record.metadata.copy()
-    if payload.tags is not None:
-        updated_metadata.tags = payload.tags
     if payload.source_tags is not None:
         _guard_external_source_tags(payload.source_tags)
-        updated_metadata.source_tags = payload.source_tags
-    if payload.virtue_markers is not None:
-        updated_metadata.virtue_markers = _normalize_virtue_markers(payload.virtue_markers)
-    if payload.salience is not None:
-        updated_metadata.salience = payload.salience
-    updated_metadata.updated_at = datetime.now(timezone.utc)
-    updated_content = payload.content if payload.content is not None else record.content
-    updated_record = MemoryRecord(metadata=updated_metadata, content=updated_content)
-    user_store[memory_id] = updated_record
-    _rebuild_vector_index(user.user_id)
-    _log_memory_event("update", user.user_id, user_store, memory_id=memory_id)
+    updated_record = _update_memory_record(memory_id, payload)
+    if not updated_record:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    _rebuild_vector_index()
+    _log_memory_event("update", user.user_id, memory_id=memory_id)
     return updated_record
 
 
@@ -1368,12 +1642,11 @@ def memory_delete(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> Dict[str, str]:
-    user_store = _get_user_store(user.user_id)
-    if memory_id not in user_store:
+    deleted = _delete_memory_record(memory_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Memory not found")
-    del user_store[memory_id]
-    _rebuild_vector_index(user.user_id)
-    _log_memory_event("delete", user.user_id, user_store, memory_id=memory_id)
+    _rebuild_vector_index()
+    _log_memory_event("delete", user.user_id, memory_id=memory_id)
     return {"status": "deleted", "memory_id": memory_id}
 
 
@@ -1382,7 +1655,7 @@ def memory_export_json(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> MemoryModule:
-    return MemoryModule(memories=list(_get_user_store(user.user_id).values()))
+    return MemoryModule(memories=_fetch_all_memories())
 
 
 @app.get("/memory/export/xml")
@@ -1390,7 +1663,7 @@ def memory_export_xml(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> Response:
-    xml_payload = _memory_module_to_xml(list(_get_user_store(user.user_id).values()))
+    xml_payload = _memory_module_to_xml(_fetch_all_memories())
     return Response(content=xml_payload, media_type="application/xml")
 
 
@@ -1404,11 +1677,13 @@ def memory_import_json(
     if replace:
         reset_memory_store(user.user_id)
     memory_ids: List[str] = []
-    user_store = _get_user_store(user.user_id)
+    existing_ids = _existing_memory_ids(
+        record.metadata.memory_id for record in payload.memories
+    )
     for record in payload.memories:
         _guard_external_source_tags(record.metadata.source_tags)
         memory_id = record.metadata.memory_id
-        if memory_id and memory_id in user_store:
+        if memory_id and memory_id in existing_ids:
             memory_id = None
         created_at = record.metadata.created_at
         updated_at = record.metadata.updated_at
@@ -1429,7 +1704,6 @@ def memory_import_json(
     _log_memory_event(
         "import_json",
         user.user_id,
-        user_store,
         detail=f"imported={len(memory_ids)} replace={replace}",
     )
     return MemoryImportResponse(imported=len(memory_ids), memory_ids=memory_ids)
@@ -1446,11 +1720,11 @@ def memory_import_xml(
         reset_memory_store(user.user_id)
     records = _parse_memory_module_xml(xml_payload)
     memory_ids: List[str] = []
-    user_store = _get_user_store(user.user_id)
+    existing_ids = _existing_memory_ids(record.memory_id for record in records)
     for record in records:
         _guard_external_source_tags(record.source_tags)
         memory_id = record.memory_id
-        if memory_id and memory_id in user_store:
+        if memory_id and memory_id in existing_ids:
             memory_id = None
         created_record = _create_memory_record(
             user.user_id,
@@ -1469,7 +1743,6 @@ def memory_import_xml(
     _log_memory_event(
         "import_xml",
         user.user_id,
-        user_store,
         detail=f"imported={len(memory_ids)} replace={replace}",
     )
     return MemoryImportResponse(imported=len(memory_ids), memory_ids=memory_ids)
