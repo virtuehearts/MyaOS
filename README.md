@@ -72,6 +72,10 @@ Frontend:
 - `src/components/chat/ChatWindow` – Mya chat UI
 - `src/stores/windowStore` – Zustand store for window layout
 
+## UI Source of Truth
+The canonical UI lives in `frontend/` (Next.js 15). The root npm scripts now delegate to
+the Next.js app so future UI changes should target `frontend/src`.
+
 ## Request the Full Build
 Want the fully operational system with **login**, **OpenRouter LLM**, **chat interface**, **personality engine**, and **memory system**?
 
@@ -86,7 +90,7 @@ Open an issue or send a request with:
 
 ## Development
 ```bash
-npm install
+npm --prefix frontend install
 npm run dev
 ```
 
