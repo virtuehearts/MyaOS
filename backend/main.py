@@ -33,6 +33,18 @@ OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/ap
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER")
 OPENROUTER_APP_TITLE = os.getenv("OPENROUTER_APP_TITLE", "MyaOS")
+DEFAULT_OPENROUTER_MODEL = os.getenv(
+    "OPENROUTER_DEFAULT_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free"
+)
+OPENROUTER_CONTEXT_WINDOW_TOKENS = int(
+    os.getenv("OPENROUTER_CONTEXT_WINDOW_TOKENS", "128000")
+)
+OPENROUTER_RESERVED_CONTEXT_TOKENS = int(
+    os.getenv("OPENROUTER_RESERVED_CONTEXT_TOKENS", "32000")
+)
+OPENROUTER_MAX_COMPLETION_TOKENS = max(
+    0, OPENROUTER_CONTEXT_WINDOW_TOKENS - OPENROUTER_RESERVED_CONTEXT_TOKENS
+)
 LOOKUP_AUDIT_LOG_PATH = os.getenv("LOOKUP_AUDIT_LOG_PATH", "lookup_audit.log")
 LOOKED_UP_MARKER = "[LOOKED_UP]"
 EXTERNAL_LOOKUP_SOURCE_TAG = "external-lookup"
@@ -333,7 +345,7 @@ class LookupMemoryOptions(BaseModel):
 
 class LookupRequest(BaseModel):
     query: str
-    model: str = "openai/gpt-3.5-turbo"
+    model: str = DEFAULT_OPENROUTER_MODEL
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=None, ge=1)
     memory: LookupMemoryOptions = Field(default_factory=LookupMemoryOptions)
@@ -2565,6 +2577,8 @@ async def lookup_external(
     }
     if payload.max_tokens is not None:
         request_body["max_tokens"] = payload.max_tokens
+    elif payload.model == DEFAULT_OPENROUTER_MODEL:
+        request_body["max_tokens"] = OPENROUTER_MAX_COMPLETION_TOKENS
 
     response = await OPENROUTER_CLIENT.chat_completion(request_body)
 

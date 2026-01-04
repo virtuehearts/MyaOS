@@ -3,6 +3,11 @@
 import { useApiKeyStore } from '@/store/apiKeyStore';
 
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+export const DEFAULT_OPENROUTER_MODEL = 'nvidia/nemotron-nano-12b-v2-vl:free';
+export const OPENROUTER_CONTEXT_WINDOW_TOKENS = 128000;
+export const OPENROUTER_RESERVED_CONTEXT_TOKENS = 32000;
+export const OPENROUTER_MAX_COMPLETION_TOKENS =
+  OPENROUTER_CONTEXT_WINDOW_TOKENS - OPENROUTER_RESERVED_CONTEXT_TOKENS;
 
 export interface OpenRouterMessage {
   role: 'system' | 'user' | 'assistant';
@@ -13,6 +18,7 @@ export interface OpenRouterChatOptions {
   model: string;
   temperature: number;
   messages: OpenRouterMessage[];
+  maxTokens?: number;
   signal?: AbortSignal;
 }
 
@@ -32,6 +38,7 @@ export async function createOpenRouterChatCompletion({
   model,
   temperature,
   messages,
+  maxTokens,
   signal
 }: OpenRouterChatOptions): Promise<string> {
   const apiKey = resolveApiKey();
@@ -53,7 +60,12 @@ export async function createOpenRouterChatCompletion({
     body: JSON.stringify({
       model,
       temperature,
-      messages
+      messages,
+      max_tokens:
+        maxTokens ??
+        (model === DEFAULT_OPENROUTER_MODEL
+          ? OPENROUTER_MAX_COMPLETION_TOKENS
+          : undefined)
     }),
     signal
   });
