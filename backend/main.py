@@ -1517,7 +1517,10 @@ def _external_marker(external_facts: Sequence[str]) -> str:
 
 def _prefix_lookup_response(text: str) -> str:
     cleaned = text.strip()
-    return f"I have looked this information up. {cleaned}"
+    return (
+        f"{LOOKED_UP_MARKER} [{EXTERNAL_LOOKUP_SOURCE_TAG}] "
+        f"I have looked this information up. {cleaned}"
+    )
 
 
 def _openrouter_headers() -> Dict[str, str]:
@@ -1553,8 +1556,48 @@ def _ensure_source_tag(tags: List[str], tag: str) -> List[str]:
     return [*tags, tag]
 
 
-def _guard_external_source_tags(tags: Sequence[str]) -> None:
+def _write_lookup_policy_audit(
+    *,
+    event: str,
+    user_id: str,
+    detail: str,
+    source_tags: Optional[Sequence[str]] = None,
+    content_preview: Optional[str] = None,
+) -> None:
+    payload = {
+        "event": event,
+        "user_id": user_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "detail": detail,
+        "source_tags": list(source_tags or []),
+        "content_preview": content_preview,
+    }
+    with open(LOOKUP_AUDIT_LOG_PATH, "a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(payload) + "\n")
+
+
+def _guard_external_source_tags(tags: Sequence[str], *, user_id: str, action: str) -> None:
     if EXTERNAL_LOOKUP_SOURCE_TAG in tags:
+        _write_lookup_policy_audit(
+            event="external_source_tag_blocked",
+            user_id=user_id,
+            detail=f"Blocked {action} with external source tag.",
+            source_tags=tags,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="External knowledge must be stored via the /lookup endpoint.",
+        )
+
+
+def _guard_external_content(content: str, *, user_id: str, action: str) -> None:
+    if LOOKED_UP_MARKER in content:
+        _write_lookup_policy_audit(
+            event="external_marker_blocked",
+            user_id=user_id,
+            detail=f"Blocked {action} with looked-up marker in content.",
+            content_preview=content[:200],
+        )
         raise HTTPException(
             status_code=400,
             detail="External knowledge must be stored via the /lookup endpoint.",
@@ -1570,6 +1613,8 @@ def _write_lookup_audit_log(record: LookupLogRecord) -> None:
         "response": record.response,
         "response_prefixed": record.response_prefixed,
         "memory_id": record.memory_id,
+        "source_tag": EXTERNAL_LOOKUP_SOURCE_TAG,
+        "looked_up_marker": LOOKED_UP_MARKER,
     }
     with open(LOOKUP_AUDIT_LOG_PATH, "a", encoding="utf-8") as log_file:
         log_file.write(json.dumps(payload) + "\n")
@@ -2166,7 +2211,10 @@ def memory_add(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryRecord:
-    _guard_external_source_tags(payload.source_tags)
+    _guard_external_source_tags(
+        payload.source_tags, user_id=user.user_id, action="memory create"
+    )
+    _guard_external_content(payload.content, user_id=user.user_id, action="memory create")
     return _create_memory_record(user.user_id, payload)
 
 
@@ -2199,7 +2247,13 @@ def memory_update(
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryRecord:
     if payload.source_tags is not None:
-        _guard_external_source_tags(payload.source_tags)
+        _guard_external_source_tags(
+            payload.source_tags, user_id=user.user_id, action="memory update"
+        )
+    if payload.content is not None:
+        _guard_external_content(
+            payload.content, user_id=user.user_id, action="memory update"
+        )
     updated_record = _update_memory_record(memory_id, payload)
     if not updated_record:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -2264,7 +2318,12 @@ def memory_import_json(
         record.metadata.memory_id for record in payload.memories
     )
     for record in payload.memories:
-        _guard_external_source_tags(record.metadata.source_tags)
+        _guard_external_source_tags(
+            record.metadata.source_tags, user_id=user.user_id, action="memory import"
+        )
+        _guard_external_content(
+            record.content, user_id=user.user_id, action="memory import"
+        )
         memory_id = record.metadata.memory_id
         if memory_id and memory_id in existing_ids:
             memory_id = None
@@ -2305,7 +2364,12 @@ def memory_import_xml(
     memory_ids: List[str] = []
     existing_ids = _existing_memory_ids(record.memory_id for record in records)
     for record in records:
-        _guard_external_source_tags(record.source_tags)
+        _guard_external_source_tags(
+            record.source_tags, user_id=user.user_id, action="memory import"
+        )
+        _guard_external_content(
+            record.content, user_id=user.user_id, action="memory import"
+        )
         memory_id = record.memory_id
         if memory_id and memory_id in existing_ids:
             memory_id = None
