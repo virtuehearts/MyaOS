@@ -77,7 +77,7 @@ export const appRegistry: AppRegistryEntry[] = [
     accent: 'bg-retro-title-active',
     startMenuSection: 'primary',
     pinned: false,
-    desktop: false,
+    desktop: true,
     render: () => <ConsoleWindow />
   }
 ];
