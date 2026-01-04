@@ -134,6 +134,7 @@ class StateUpdateResponse(BaseModel):
 class EmotionSnapshot(BaseModel):
     state: EmotionState
     transitions: List[EmotionTransition]
+    routine_phase: str = "unspecified"
 
 
 class MemoryCreateRequest(BaseModel):
@@ -160,6 +161,7 @@ class MemoryModule(BaseModel):
     memories: List[MemoryRecord]
     emotion_state: EmotionState
     emotion_transitions: List[EmotionTransition]
+    routine_phase: str = "unspecified"
     trait_history: List[PersonalityTraitSnapshot] = Field(default_factory=list)
 
 
@@ -1143,12 +1145,14 @@ EMOTION_BASELINE = EmotionState(
 )
 EMOTION_DECAY_HALF_LIFE_SECONDS = 300.0
 EMOTION_BLEND_WEIGHT = 0.35
+EMOTION_ROUTINE_BLEND_WEIGHT = 0.2
 MAX_EMOTION_TRANSITIONS = 25
 EMOTION_STATE = EmotionState(
     **EMOTION_BASELINE.dict(),
     updated_at=datetime.now(timezone.utc),
 )
 EMOTION_TRANSITIONS: List[EmotionTransition] = []
+CURRENT_ROUTINE_PHASE = "unspecified"
 
 EMOTION_EVENT_RULES = [
     {
@@ -1293,6 +1297,56 @@ def _blend_emotion_states(
     )
 
 
+def _routine_phase_and_baseline(now: datetime) -> Tuple[str, EmotionState]:
+    local_time = now.astimezone()
+    hour = local_time.hour
+    if 5 <= hour < 12:
+        phase = "morning"
+        baseline = EmotionState(
+            valence=0.6,
+            arousal=0.65,
+            dominance=0.55,
+            label="lively",
+            intensity=0.35,
+            secondary_emotions={"lively": 0.35},
+            updated_at=now,
+        )
+    elif 12 <= hour < 17:
+        phase = "afternoon"
+        baseline = EmotionState(
+            valence=0.55,
+            arousal=0.55,
+            dominance=0.55,
+            label="focused",
+            intensity=0.25,
+            secondary_emotions={"focused": 0.25},
+            updated_at=now,
+        )
+    elif 17 <= hour < 21:
+        phase = "evening"
+        baseline = EmotionState(
+            valence=0.52,
+            arousal=0.45,
+            dominance=0.5,
+            label="mellow",
+            intensity=0.22,
+            secondary_emotions={"mellow": 0.22},
+            updated_at=now,
+        )
+    else:
+        phase = "night"
+        baseline = EmotionState(
+            valence=0.48,
+            arousal=0.35,
+            dominance=0.45,
+            label="reflective",
+            intensity=0.3,
+            secondary_emotions={"reflective": 0.3},
+            updated_at=now,
+        )
+    return phase, baseline
+
+
 
 def _deterministic_event_signal(event: str) -> float:
     if not event:
@@ -1304,8 +1358,14 @@ def _deterministic_event_signal(event: str) -> float:
 def update_emotion_state(
     current_state: EmotionState, traits: PersonalityTraits, event: str
 ) -> EmotionState:
+    global CURRENT_ROUTINE_PHASE
     now = datetime.now(timezone.utc)
     decayed_state = _apply_emotion_decay(current_state, now)
+    routine_phase, routine_baseline = _routine_phase_and_baseline(now)
+    CURRENT_ROUTINE_PHASE = routine_phase
+    scheduled_state = _blend_emotion_states(
+        decayed_state, routine_baseline, EMOTION_ROUTINE_BLEND_WEIGHT
+    )
     signal = _deterministic_event_signal(event)
     rule = _event_to_emotion_rule(event)
 
@@ -1318,16 +1378,16 @@ def update_emotion_state(
     dominance_shift = rule["dominance"] + (traits.conscientiousness - 0.5) * 0.1
 
     target_state = EmotionState(
-        valence=_clamp(decayed_state.valence + valence_shift),
-        arousal=_clamp(decayed_state.arousal + arousal_shift),
-        dominance=_clamp(decayed_state.dominance + dominance_shift),
+        valence=_clamp(scheduled_state.valence + valence_shift),
+        arousal=_clamp(scheduled_state.arousal + arousal_shift),
+        dominance=_clamp(scheduled_state.dominance + dominance_shift),
         label=str(rule["label"]),
         intensity=_clamp(float(rule["intensity"]) + abs(signal - 0.5) * 0.6),
         secondary_emotions={str(rule["label"]): _clamp(float(rule["intensity"]))},
         updated_at=now,
     )
 
-    blended = _blend_emotion_states(decayed_state, target_state, EMOTION_BLEND_WEIGHT)
+    blended = _blend_emotion_states(scheduled_state, target_state, EMOTION_BLEND_WEIGHT)
     blended.updated_at = now
     return blended
 
@@ -1807,8 +1867,10 @@ def _memory_module_to_xml(
     memories: List[MemoryRecord],
     emotion_state: EmotionState,
     emotion_transitions: Sequence[EmotionTransition],
+    routine_phase: str,
 ) -> str:
     root = ET.Element("memory_module")
+    ET.SubElement(root, "routine_phase").text = routine_phase
     emotion_el = ET.SubElement(root, "emotion_state")
     ET.SubElement(emotion_el, "valence").text = str(emotion_state.valence)
     ET.SubElement(emotion_el, "arousal").text = str(emotion_state.arousal)
@@ -2099,7 +2161,10 @@ def state_update(
         EMOTION_TRANSITIONS.pop(0)
     return StateUpdateResponse(
         new_state=new_state,
-        explanation="Blended deterministic update with decay, event rules, and trait shaping.",
+        explanation=(
+            "Blended deterministic update with decay, time-of-day routine baseline, "
+            "event rules, and trait shaping."
+        ),
     )
 
 
@@ -2112,6 +2177,7 @@ def state_snapshot(
     return EmotionSnapshot(
         state=EMOTION_STATE,
         transitions=list(EMOTION_TRANSITIONS),
+        routine_phase=CURRENT_ROUTINE_PHASE,
     )
 
 
@@ -2286,6 +2352,7 @@ def memory_export_json(
         memories=_fetch_all_memories(),
         emotion_state=EMOTION_STATE,
         emotion_transitions=list(EMOTION_TRANSITIONS),
+        routine_phase=CURRENT_ROUTINE_PHASE,
         trait_history=_fetch_trait_history(),
     )
 
@@ -2300,6 +2367,7 @@ def memory_export_xml(
         _fetch_all_memories(),
         EMOTION_STATE,
         EMOTION_TRANSITIONS,
+        CURRENT_ROUTINE_PHASE,
     )
     return Response(content=xml_payload, media_type="application/xml")
 
