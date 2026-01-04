@@ -7,7 +7,12 @@ export interface OsWindowState {
   title: string;
   isOpen: boolean;
   isMinimized: boolean;
+  isResizing: boolean;
   zIndex: number;
+  width: number;
+  height: number;
+  minWidth: number;
+  minHeight: number;
 }
 
 interface OsStore {
@@ -17,12 +22,47 @@ interface OsStore {
   closeWindow: (id: WindowId) => void;
   focusWindow: (id: WindowId) => void;
   toggleMinimize: (id: WindowId) => void;
+  setWindowSize: (id: WindowId, size: { width: number; height: number }) => void;
+  setWindowResizing: (id: WindowId, isResizing: boolean) => void;
 }
 
 const baseWindows: OsWindowState[] = [
-  { id: 'chat', title: 'Mya Chat', isOpen: true, isMinimized: false, zIndex: 10 },
-  { id: 'memory', title: 'Memory Vault', isOpen: false, isMinimized: false, zIndex: 8 },
-  { id: 'settings', title: 'System Settings', isOpen: false, isMinimized: false, zIndex: 7 }
+  {
+    id: 'chat',
+    title: 'Mya Chat',
+    isOpen: true,
+    isMinimized: false,
+    isResizing: false,
+    zIndex: 10,
+    width: 560,
+    height: 420,
+    minWidth: 360,
+    minHeight: 280
+  },
+  {
+    id: 'memory',
+    title: 'Memory Vault',
+    isOpen: false,
+    isMinimized: false,
+    isResizing: false,
+    zIndex: 8,
+    width: 520,
+    height: 380,
+    minWidth: 360,
+    minHeight: 280
+  },
+  {
+    id: 'settings',
+    title: 'System Settings',
+    isOpen: false,
+    isMinimized: false,
+    isResizing: false,
+    zIndex: 7,
+    width: 540,
+    height: 400,
+    minWidth: 360,
+    minHeight: 280
+  }
 ];
 
 export const useOsStore = create<OsStore>((set) => ({
@@ -57,6 +97,18 @@ export const useOsStore = create<OsStore>((set) => ({
         window.id === id
           ? { ...window, isMinimized: !window.isMinimized }
           : window
+      )
+    })),
+  setWindowSize: (id, size) =>
+    set((state) => ({
+      windows: state.windows.map((window) =>
+        window.id === id ? { ...window, ...size } : window
+      )
+    })),
+  setWindowResizing: (id, isResizing) =>
+    set((state) => ({
+      windows: state.windows.map((window) =>
+        window.id === id ? { ...window, isResizing } : window
       )
     }))
 }));

@@ -14,7 +14,15 @@ import { AuthUser, useAuthStore } from '@/store/authStore';
 import { useOsStore, type WindowId } from '@/store/osStore';
 
 export function OsShell() {
-  const { windows, closeWindow, focusWindow, toggleMinimize, openWindow } = useOsStore();
+  const {
+    windows,
+    closeWindow,
+    focusWindow,
+    toggleMinimize,
+    openWindow,
+    setWindowResizing,
+    setWindowSize
+  } = useOsStore();
   const [startMenuOpen, setStartMenuOpen] = useState(false);
   const [desktopBackground, setDesktopBackground] = useState<string | null>(null);
   const { token, user, setUser, clearSession, status, setStatus } = useAuthStore();
@@ -90,10 +98,19 @@ export function OsShell() {
           title="Mya Chat"
           isActive={chatWindow.id === 'chat'}
           isMinimized={chatWindow.isMinimized}
+          width={chatWindow.width}
+          height={chatWindow.height}
+          minWidth={chatWindow.minWidth}
+          minHeight={chatWindow.minHeight}
           zIndex={chatWindow.zIndex}
           onClose={() => closeWindow('chat')}
           onMinimize={() => toggleMinimize('chat')}
           onFocus={() => focusWindow('chat')}
+          onResizeStart={() => setWindowResizing('chat', true)}
+          onResizeStop={(size) => {
+            setWindowSize('chat', size);
+            setWindowResizing('chat', false);
+          }}
         >
           <ChatWindow />
         </OsWindow>
@@ -105,10 +122,19 @@ export function OsShell() {
           title="Memory Vault"
           isActive={memoryWindow.id === 'memory'}
           isMinimized={memoryWindow.isMinimized}
+          width={memoryWindow.width}
+          height={memoryWindow.height}
+          minWidth={memoryWindow.minWidth}
+          minHeight={memoryWindow.minHeight}
           zIndex={memoryWindow.zIndex}
           onClose={() => closeWindow('memory')}
           onMinimize={() => toggleMinimize('memory')}
           onFocus={() => focusWindow('memory')}
+          onResizeStart={() => setWindowResizing('memory', true)}
+          onResizeStop={(size) => {
+            setWindowSize('memory', size);
+            setWindowResizing('memory', false);
+          }}
         >
           <MemoryWindow />
         </OsWindow>
@@ -120,10 +146,19 @@ export function OsShell() {
           title="System Settings"
           isActive={settingsWindow.id === 'settings'}
           isMinimized={settingsWindow.isMinimized}
+          width={settingsWindow.width}
+          height={settingsWindow.height}
+          minWidth={settingsWindow.minWidth}
+          minHeight={settingsWindow.minHeight}
           zIndex={settingsWindow.zIndex}
           onClose={() => closeWindow('settings')}
           onMinimize={() => toggleMinimize('settings')}
           onFocus={() => focusWindow('settings')}
+          onResizeStart={() => setWindowResizing('settings', true)}
+          onResizeStop={(size) => {
+            setWindowSize('settings', size);
+            setWindowResizing('settings', false);
+          }}
         >
           <SettingsWindow
             desktopBackground={desktopBackground}
