@@ -39,3 +39,14 @@ CREATE TABLE memory_virtue_markers (
         FOREIGN KEY (memory_id) REFERENCES memories(id)
         ON DELETE CASCADE
 );
+
+CREATE TABLE personality_trait_history (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    snapshot_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    openness DECIMAL(4, 3) NOT NULL DEFAULT 0.500,
+    conscientiousness DECIMAL(4, 3) NOT NULL DEFAULT 0.500,
+    extraversion DECIMAL(4, 3) NOT NULL DEFAULT 0.500,
+    agreeableness DECIMAL(4, 3) NOT NULL DEFAULT 0.500,
+    neuroticism DECIMAL(4, 3) NOT NULL DEFAULT 0.500,
+    signal_summary JSON NULL
+);

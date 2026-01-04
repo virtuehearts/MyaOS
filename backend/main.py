@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -50,6 +51,11 @@ MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER", "myaos")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "myaos_password")
 MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "myaos")
+TRAIT_ANALYSIS_INTERVAL_SECONDS = int(
+    os.getenv("TRAIT_ANALYSIS_INTERVAL_SECONDS", "300")
+)
+TRAIT_HISTORY_LIMIT = int(os.getenv("TRAIT_HISTORY_LIMIT", "120"))
+TRAIT_ANALYSIS_ENABLED = os.getenv("TRAIT_ANALYSIS_ENABLED", "true").lower() == "true"
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -91,6 +97,12 @@ class PersonalityTraits(BaseModel):
     extraversion: float = Field(..., ge=0.0, le=1.0)
     agreeableness: float = Field(..., ge=0.0, le=1.0)
     neuroticism: float = Field(..., ge=0.0, le=1.0)
+
+
+class PersonalityTraitSnapshot(BaseModel):
+    snapshot_at: datetime
+    traits: PersonalityTraits
+    signals: Dict[str, float] = Field(default_factory=dict)
 
 
 class MemoryMetadata(BaseModel):
@@ -148,6 +160,7 @@ class MemoryModule(BaseModel):
     memories: List[MemoryRecord]
     emotion_state: EmotionState
     emotion_transitions: List[EmotionTransition]
+    trait_history: List[PersonalityTraitSnapshot] = Field(default_factory=list)
 
 
 class MemoryImportRecord(BaseModel):
@@ -756,6 +769,311 @@ def _safe_calculate(expression: str) -> float:
 
 def _clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
     return max(min_value, min(max_value, value))
+
+
+def _baseline_traits() -> PersonalityTraits:
+    return PersonalityTraits(
+        openness=0.5,
+        conscientiousness=0.5,
+        extraversion=0.5,
+        agreeableness=0.5,
+        neuroticism=0.5,
+    )
+
+
+def _fetch_latest_trait_snapshot() -> Optional[PersonalityTraitSnapshot]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT snapshot_at, openness, conscientiousness, extraversion,
+                       agreeableness, neuroticism, signal_summary
+                FROM personality_trait_history
+                ORDER BY snapshot_at DESC, id DESC
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+    if not row:
+        return None
+    signals = {}
+    if row.get("signal_summary"):
+        try:
+            signals = json.loads(row["signal_summary"])
+        except json.JSONDecodeError:
+            signals = {}
+    return PersonalityTraitSnapshot(
+        snapshot_at=_as_utc(row["snapshot_at"]),
+        traits=PersonalityTraits(
+            openness=float(row["openness"]),
+            conscientiousness=float(row["conscientiousness"]),
+            extraversion=float(row["extraversion"]),
+            agreeableness=float(row["agreeableness"]),
+            neuroticism=float(row["neuroticism"]),
+        ),
+        signals=signals,
+    )
+
+
+def _fetch_trait_history(limit: int = TRAIT_HISTORY_LIMIT) -> List[PersonalityTraitSnapshot]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT snapshot_at, openness, conscientiousness, extraversion,
+                       agreeableness, neuroticism, signal_summary
+                FROM personality_trait_history
+                ORDER BY snapshot_at DESC, id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+    snapshots: List[PersonalityTraitSnapshot] = []
+    for row in reversed(rows):
+        signals = {}
+        if row.get("signal_summary"):
+            try:
+                signals = json.loads(row["signal_summary"])
+            except json.JSONDecodeError:
+                signals = {}
+        snapshots.append(
+            PersonalityTraitSnapshot(
+                snapshot_at=_as_utc(row["snapshot_at"]),
+                traits=PersonalityTraits(
+                    openness=float(row["openness"]),
+                    conscientiousness=float(row["conscientiousness"]),
+                    extraversion=float(row["extraversion"]),
+                    agreeableness=float(row["agreeableness"]),
+                    neuroticism=float(row["neuroticism"]),
+                ),
+                signals=signals,
+            )
+        )
+    return snapshots
+
+
+def _store_trait_snapshot(
+    traits: PersonalityTraits,
+    snapshot_at: datetime,
+    signals: Dict[str, float],
+) -> None:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO personality_trait_history (
+                    snapshot_at, openness, conscientiousness, extraversion,
+                    agreeableness, neuroticism, signal_summary
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    snapshot_at,
+                    traits.openness,
+                    traits.conscientiousness,
+                    traits.extraversion,
+                    traits.agreeableness,
+                    traits.neuroticism,
+                    json.dumps(signals),
+                ),
+            )
+        connection.commit()
+
+
+def _keyword_hits(text: str, keywords: Iterable[str]) -> int:
+    if not text:
+        return 0
+    hits = 0
+    for keyword in keywords:
+        pattern = rf"\\b{re.escape(keyword)}\\b"
+        hits += len(re.findall(pattern, text))
+    return hits
+
+
+def _memory_signal_weight(record: MemoryRecord) -> float:
+    return max(0.3, record.metadata.salience)
+
+
+def _collect_trait_signals(
+    records: Iterable[MemoryRecord],
+    since: Optional[datetime],
+) -> Dict[str, float]:
+    supportive_keywords = (
+        "support",
+        "help",
+        "care",
+        "kind",
+        "empathy",
+        "encourage",
+        "listen",
+        "gratitude",
+        "thank",
+    )
+    conflict_keywords = (
+        "conflict",
+        "argue",
+        "fight",
+        "angry",
+        "upset",
+        "hostile",
+        "criticize",
+        "insult",
+    )
+    curiosity_keywords = (
+        "curious",
+        "explore",
+        "discover",
+        "learn",
+        "new",
+        "idea",
+    )
+    discipline_keywords = (
+        "plan",
+        "schedule",
+        "routine",
+        "discipline",
+        "goal",
+        "organize",
+    )
+    social_keywords = (
+        "chat",
+        "talk",
+        "meet",
+        "group",
+        "share",
+        "community",
+        "sangat",
+    )
+    anxiety_keywords = (
+        "anxious",
+        "worry",
+        "stress",
+        "fear",
+        "panic",
+        "overwhelmed",
+    )
+    seva_keywords = (
+        "seva",
+        "langar",
+        "kirat",
+        "gurbani",
+        "simran",
+        "chardi",
+        "hukam",
+    )
+    compassion_keywords = (
+        "compassion",
+        "mercy",
+        "kindness",
+        "forgive",
+    )
+
+    signals: Dict[str, float] = {
+        "supportive": 0.0,
+        "conflict": 0.0,
+        "curiosity": 0.0,
+        "discipline": 0.0,
+        "social": 0.0,
+        "anxiety": 0.0,
+        "seva": 0.0,
+        "compassion": 0.0,
+    }
+
+    for record in records:
+        created_at = record.metadata.created_at
+        if since and created_at <= since:
+            continue
+        tokens = [
+            record.content,
+            " ".join(record.metadata.tags),
+            " ".join(record.metadata.source_tags),
+            " ".join(record.metadata.virtue_markers.keys()),
+        ]
+        text = " ".join(tokens).lower()
+        weight = _memory_signal_weight(record)
+        signals["supportive"] += weight * _keyword_hits(text, supportive_keywords)
+        signals["conflict"] += weight * _keyword_hits(text, conflict_keywords)
+        signals["curiosity"] += weight * _keyword_hits(text, curiosity_keywords)
+        signals["discipline"] += weight * _keyword_hits(text, discipline_keywords)
+        signals["social"] += weight * _keyword_hits(text, social_keywords)
+        signals["anxiety"] += weight * _keyword_hits(text, anxiety_keywords)
+        signals["seva"] += weight * _keyword_hits(text, seva_keywords)
+        signals["compassion"] += weight * _keyword_hits(text, compassion_keywords)
+        for virtue_name, virtue_score in record.metadata.virtue_markers.items():
+            virtue = virtue_name.lower()
+            if "seva" in virtue or "service" in virtue:
+                signals["seva"] += weight * float(virtue_score)
+            if "compassion" in virtue or "daya" in virtue:
+                signals["compassion"] += weight * float(virtue_score)
+
+    return signals
+
+
+def _evolve_traits(
+    base: PersonalityTraits,
+    signals: Dict[str, float],
+) -> PersonalityTraits:
+    agreeableness = base.agreeableness
+    neuroticism = base.neuroticism
+    openness = base.openness
+    conscientiousness = base.conscientiousness
+    extraversion = base.extraversion
+
+    agreeableness += 0.012 * signals.get("supportive", 0.0)
+    agreeableness += 0.02 * signals.get("seva", 0.0)
+    agreeableness += 0.015 * signals.get("compassion", 0.0)
+    agreeableness -= 0.01 * signals.get("conflict", 0.0)
+
+    neuroticism += 0.015 * signals.get("conflict", 0.0)
+    neuroticism += 0.01 * signals.get("anxiety", 0.0)
+    neuroticism -= 0.006 * signals.get("supportive", 0.0)
+
+    openness += 0.01 * signals.get("curiosity", 0.0)
+    conscientiousness += 0.01 * signals.get("discipline", 0.0)
+    conscientiousness += 0.008 * signals.get("seva", 0.0)
+    extraversion += 0.01 * signals.get("social", 0.0)
+
+    return PersonalityTraits(
+        openness=_clamp(openness),
+        conscientiousness=_clamp(conscientiousness),
+        extraversion=_clamp(extraversion),
+        agreeableness=_clamp(agreeableness),
+        neuroticism=_clamp(neuroticism),
+    )
+
+
+def _run_trait_evolution_job() -> None:
+    records = _fetch_all_memories()
+    latest_snapshot = _fetch_latest_trait_snapshot()
+    since = latest_snapshot.snapshot_at if latest_snapshot else None
+    signals = _collect_trait_signals(records, since)
+    if all(value == 0 for value in signals.values()):
+        return
+    base_traits = latest_snapshot.traits if latest_snapshot else _baseline_traits()
+    updated_traits = _evolve_traits(base_traits, signals)
+    snapshot_at = datetime.now(timezone.utc)
+    _store_trait_snapshot(updated_traits, snapshot_at, signals)
+    LOGGER.info(
+        "trait_evolution snapshot=%s traits=(%.3f,%.3f,%.3f,%.3f,%.3f) signals=%s",
+        snapshot_at.isoformat(),
+        updated_traits.openness,
+        updated_traits.conscientiousness,
+        updated_traits.extraversion,
+        updated_traits.agreeableness,
+        updated_traits.neuroticism,
+        signals,
+    )
+
+
+def _trait_evolution_loop() -> None:
+    LOGGER.info("Starting trait evolution loop interval=%ss", TRAIT_ANALYSIS_INTERVAL_SECONDS)
+    while True:
+        try:
+            _run_trait_evolution_job()
+        except Exception as exc:
+            LOGGER.warning("Trait evolution job failed: %s", exc)
+        time.sleep(TRAIT_ANALYSIS_INTERVAL_SECONDS)
 
 
 def _memory_stats() -> Tuple[int, int]:
@@ -1543,6 +1861,9 @@ def _rehydrate_vector_index() -> None:
         _rebuild_vector_index()
     except Exception as exc:
         LOGGER.warning("Failed to rehydrate vector index: %s", exc)
+    if TRAIT_ANALYSIS_ENABLED:
+        thread = threading.Thread(target=_trait_evolution_loop, daemon=True)
+        thread.start()
 
 
 @app.get("/health")
@@ -1911,6 +2232,7 @@ def memory_export_json(
         memories=_fetch_all_memories(),
         emotion_state=EMOTION_STATE,
         emotion_transitions=list(EMOTION_TRANSITIONS),
+        trait_history=_fetch_trait_history(),
     )
 
 
