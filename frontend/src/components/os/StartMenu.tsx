@@ -130,58 +130,66 @@ export function StartMenu({ isOpen, onClose, anchorRef }: StartMenuProps) {
         <div className="border-b border-retro-border bg-retro-title-active px-3 py-2 text-xs font-semibold text-retro-text">
           {user?.name ? `${user.name}` : 'MyaOS User'}
         </div>
-        <div className="flex flex-col py-2 text-xs">
+        <div className="flex flex-col py-2 text-xs text-left">
           <div className="px-3 pb-1 text-[10px] uppercase text-retro-accent">
             Local Programs
           </div>
-          {menuApps.registryApps.map((app) => (
-            <Button
-              key={app.id}
-              variant="ghost"
-              className="justify-start px-3"
-              onClick={() => handleLaunch(app)}
-              disabled={app.disabled}
-            >
-              <span className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    'h-5 w-5 border border-retro-border',
-                    app.accent
-                  )}
-                />
-                <span className="flex flex-col">
-                  <span>{app.label}</span>
-                  <span className="text-[10px] text-retro-accent">{app.description}</span>
+          <div className="flex flex-col gap-1 border-b border-retro-border/60 pb-2">
+            {menuApps.registryApps.map((app) => (
+              <Button
+                key={app.id}
+                variant="ghost"
+                className="justify-start px-3 text-left"
+                onClick={() => handleLaunch(app)}
+                disabled={app.disabled}
+              >
+                <span className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'h-5 w-5 border border-retro-border',
+                      app.accent
+                    )}
+                  />
+                  <span className="flex flex-col">
+                    <span>{app.label}</span>
+                    <span className="text-[10px] text-retro-accent">
+                      {app.description}
+                    </span>
+                  </span>
                 </span>
-              </span>
-            </Button>
-          ))}
+              </Button>
+            ))}
+          </div>
           <div className="mt-2 px-3 pb-1 text-[10px] uppercase text-retro-accent">
             Coming Soon
           </div>
-          {menuApps.comingSoon.map((app) => (
-            <Button
-              key={app.id}
-              variant="ghost"
-              className="justify-start px-3 opacity-70"
-              onClick={() => handleLaunch(app)}
-              disabled={app.disabled}
-            >
-              <span className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    'h-5 w-5 border border-retro-border',
-                    app.accent
-                  )}
-                />
-                <span className="flex flex-col">
-                  <span>{app.label}</span>
-                  <span className="text-[10px] text-retro-accent">{app.description}</span>
+          <div className="flex flex-col gap-1 border-b border-retro-border/40 pb-2">
+            {menuApps.comingSoon.map((app) => (
+              <Button
+                key={app.id}
+                variant="ghost"
+                className="justify-start px-3 text-left opacity-70"
+                onClick={() => handleLaunch(app)}
+                disabled={app.disabled}
+              >
+                <span className="flex items-center gap-2">
+                  <span
+                    className={cn(
+                      'h-5 w-5 border border-retro-border',
+                      app.accent
+                    )}
+                  />
+                  <span className="flex flex-col">
+                    <span>{app.label}</span>
+                    <span className="text-[10px] text-retro-accent">
+                      {app.description}
+                    </span>
+                  </span>
                 </span>
-              </span>
-            </Button>
-          ))}
-          <div className="my-2 border-t border-retro-border" />
+              </Button>
+            ))}
+          </div>
+          <div className="my-2 border-t border-retro-border/60" />
           <Button variant="ghost" className="justify-start px-3" onClick={handleSignOut}>
             Shut Down...
           </Button>

@@ -167,7 +167,7 @@ export function OsShell() {
       <Taskbar
         isStartOpen={startMenuOpen}
         onToggleStart={() => setStartMenuOpen((open) => !open)}
-        isStartDisabled={!user}
+        isStartDisabled={!user && !token}
         startButtonRef={startButtonRef}
       />
     </div>

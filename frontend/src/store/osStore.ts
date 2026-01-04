@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-export type WindowId = 'chat' | 'memory' | 'settings';
+export type WindowId = 'chat' | 'memory' | 'settings' | 'console';
 
 export interface OsWindowState {
   id: WindowId;
@@ -63,6 +63,18 @@ const baseWindows: OsWindowState[] = [
     height: 400,
     minWidth: 360,
     minHeight: 280
+  },
+  {
+    id: 'console',
+    title: 'Console',
+    isOpen: false,
+    isMinimized: false,
+    isResizing: false,
+    zIndex: 6,
+    width: 520,
+    height: 320,
+    minWidth: 360,
+    minHeight: 220
   }
 ];
 
