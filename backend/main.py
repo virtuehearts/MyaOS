@@ -160,6 +160,8 @@ class MemoryListResponse(BaseModel):
 class MemoryModule(BaseModel):
     memories: List[MemoryRecord]
     emotion_state: EmotionState
+    emotion_baseline: EmotionState
+    personality_traits: PersonalityTraits
     emotion_transitions: List[EmotionTransition]
     routine_phase: str = "unspecified"
     trait_history: List[PersonalityTraitSnapshot] = Field(default_factory=list)
@@ -178,6 +180,21 @@ class MemoryImportRecord(BaseModel):
 
 class MemoryImportRequest(BaseModel):
     memories: List[MemoryRecord]
+    emotion_state: Optional[EmotionState] = None
+    emotion_baseline: Optional[EmotionState] = None
+    personality_traits: Optional[PersonalityTraits] = None
+    emotion_transitions: List[EmotionTransition] = Field(default_factory=list)
+    routine_phase: Optional[str] = None
+    trait_history: List[PersonalityTraitSnapshot] = Field(default_factory=list)
+
+
+class MemoryModuleImportData(BaseModel):
+    memories: List[MemoryImportRecord]
+    emotion_state: Optional[EmotionState] = None
+    emotion_baseline: Optional[EmotionState] = None
+    personality_traits: Optional[PersonalityTraits] = None
+    emotion_transitions: List[EmotionTransition] = Field(default_factory=list)
+    routine_phase: Optional[str] = None
 
 
 class MemoryImportResponse(BaseModel):
@@ -855,6 +872,11 @@ def _fetch_trait_history(limit: int = TRAIT_HISTORY_LIMIT) -> List[PersonalityTr
     return snapshots
 
 
+def _current_personality_traits() -> PersonalityTraits:
+    latest_snapshot = _fetch_latest_trait_snapshot()
+    return latest_snapshot.traits if latest_snapshot else _baseline_traits()
+
+
 def _store_trait_snapshot(
     traits: PersonalityTraits,
     snapshot_at: datetime,
@@ -1133,6 +1155,40 @@ def _log_state_transition(
         new_state.label,
         new_state.intensity,
     )
+
+
+def _apply_imported_brain_state(
+    emotion_state: Optional[EmotionState],
+    emotion_baseline: Optional[EmotionState],
+    emotion_transitions: Sequence[EmotionTransition],
+    routine_phase: Optional[str],
+    personality_traits: Optional[PersonalityTraits],
+    trait_history: Sequence[PersonalityTraitSnapshot],
+) -> None:
+    global EMOTION_BASELINE
+    global EMOTION_STATE
+    global EMOTION_TRANSITIONS
+    global CURRENT_ROUTINE_PHASE
+
+    if emotion_baseline:
+        EMOTION_BASELINE = emotion_baseline
+    if emotion_state:
+        EMOTION_STATE = emotion_state
+    if emotion_transitions:
+        EMOTION_TRANSITIONS = list(emotion_transitions)[-MAX_EMOTION_TRANSITIONS:]
+    if routine_phase:
+        CURRENT_ROUTINE_PHASE = routine_phase
+
+    traits_snapshot = None
+    if trait_history:
+        traits_snapshot = trait_history[-1]
+    traits = personality_traits or (traits_snapshot.traits if traits_snapshot else None)
+    if traits:
+        snapshot_at = (
+            traits_snapshot.snapshot_at if traits_snapshot else datetime.now(timezone.utc)
+        )
+        signals = traits_snapshot.signals if traits_snapshot else {}
+        _store_trait_snapshot(traits, snapshot_at, signals)
 
 
 EMOTION_BASELINE = EmotionState(
@@ -1863,42 +1919,50 @@ def _delete_memory_record(memory_id: str) -> bool:
     return deleted
 
 
+def _emotion_state_to_xml(parent: ET.Element, tag: str, state: EmotionState) -> ET.Element:
+    emotion_el = ET.SubElement(parent, tag)
+    ET.SubElement(emotion_el, "valence").text = str(state.valence)
+    ET.SubElement(emotion_el, "arousal").text = str(state.arousal)
+    ET.SubElement(emotion_el, "dominance").text = str(state.dominance)
+    ET.SubElement(emotion_el, "label").text = state.label
+    ET.SubElement(emotion_el, "intensity").text = str(state.intensity)
+    if state.updated_at:
+        ET.SubElement(emotion_el, "updated_at").text = state.updated_at.isoformat()
+    secondary_el = ET.SubElement(emotion_el, "secondary_emotions")
+    for name, value in state.secondary_emotions.items():
+        ET.SubElement(secondary_el, "emotion", name=name, score=str(value))
+    return emotion_el
+
+
+def _personality_traits_to_xml(parent: ET.Element, traits: PersonalityTraits) -> None:
+    traits_el = ET.SubElement(parent, "personality_traits")
+    ET.SubElement(traits_el, "openness").text = str(traits.openness)
+    ET.SubElement(traits_el, "conscientiousness").text = str(traits.conscientiousness)
+    ET.SubElement(traits_el, "extraversion").text = str(traits.extraversion)
+    ET.SubElement(traits_el, "agreeableness").text = str(traits.agreeableness)
+    ET.SubElement(traits_el, "neuroticism").text = str(traits.neuroticism)
+
+
 def _memory_module_to_xml(
     memories: List[MemoryRecord],
     emotion_state: EmotionState,
     emotion_transitions: Sequence[EmotionTransition],
     routine_phase: str,
+    personality_traits: PersonalityTraits,
+    emotion_baseline: EmotionState,
 ) -> str:
     root = ET.Element("memory_module")
     ET.SubElement(root, "routine_phase").text = routine_phase
-    emotion_el = ET.SubElement(root, "emotion_state")
-    ET.SubElement(emotion_el, "valence").text = str(emotion_state.valence)
-    ET.SubElement(emotion_el, "arousal").text = str(emotion_state.arousal)
-    ET.SubElement(emotion_el, "dominance").text = str(emotion_state.dominance)
-    ET.SubElement(emotion_el, "label").text = emotion_state.label
-    ET.SubElement(emotion_el, "intensity").text = str(emotion_state.intensity)
-    if emotion_state.updated_at:
-        ET.SubElement(emotion_el, "updated_at").text = emotion_state.updated_at.isoformat()
-    secondary_el = ET.SubElement(emotion_el, "secondary_emotions")
-    for name, value in emotion_state.secondary_emotions.items():
-        ET.SubElement(secondary_el, "emotion", name=name, score=str(value))
+    _emotion_state_to_xml(root, "emotion_state", emotion_state)
+    _emotion_state_to_xml(root, "emotion_baseline", emotion_baseline)
+    _personality_traits_to_xml(root, personality_traits)
     transitions_el = ET.SubElement(root, "emotion_transitions")
     for transition in emotion_transitions:
         transition_el = ET.SubElement(transitions_el, "transition")
         ET.SubElement(transition_el, "timestamp").text = transition.timestamp.isoformat()
         ET.SubElement(transition_el, "event").text = transition.event
-        previous_el = ET.SubElement(transition_el, "previous_state")
-        ET.SubElement(previous_el, "valence").text = str(transition.previous_state.valence)
-        ET.SubElement(previous_el, "arousal").text = str(transition.previous_state.arousal)
-        ET.SubElement(previous_el, "dominance").text = str(transition.previous_state.dominance)
-        ET.SubElement(previous_el, "label").text = transition.previous_state.label
-        ET.SubElement(previous_el, "intensity").text = str(transition.previous_state.intensity)
-        new_el = ET.SubElement(transition_el, "new_state")
-        ET.SubElement(new_el, "valence").text = str(transition.new_state.valence)
-        ET.SubElement(new_el, "arousal").text = str(transition.new_state.arousal)
-        ET.SubElement(new_el, "dominance").text = str(transition.new_state.dominance)
-        ET.SubElement(new_el, "label").text = transition.new_state.label
-        ET.SubElement(new_el, "intensity").text = str(transition.new_state.intensity)
+        _emotion_state_to_xml(transition_el, "previous_state", transition.previous_state)
+        _emotion_state_to_xml(transition_el, "new_state", transition.new_state)
     for record in memories:
         memory_el = ET.SubElement(root, "memory", id=record.metadata.memory_id)
         ET.SubElement(memory_el, "content").text = record.content
@@ -1918,7 +1982,84 @@ def _memory_module_to_xml(
     return ET.tostring(root, encoding="unicode")
 
 
-def _parse_memory_module_xml(xml_payload: str) -> List[MemoryImportRecord]:
+def _parse_emotion_state_element(element: Optional[ET.Element]) -> Optional[EmotionState]:
+    if element is None:
+        return None
+    valence_el = element.find("valence")
+    arousal_el = element.find("arousal")
+    dominance_el = element.find("dominance")
+    label_el = element.find("label")
+    intensity_el = element.find("intensity")
+    if (
+        valence_el is None
+        or arousal_el is None
+        or dominance_el is None
+        or label_el is None
+        or intensity_el is None
+        or valence_el.text is None
+        or arousal_el.text is None
+        or dominance_el.text is None
+        or label_el.text is None
+        or intensity_el.text is None
+    ):
+        return None
+    updated_el = element.find("updated_at")
+    secondary: Dict[str, float] = {}
+    for emotion_el in element.findall("./secondary_emotions/emotion"):
+        name = emotion_el.attrib.get("name")
+        score = emotion_el.attrib.get("score")
+        if name and score:
+            secondary[name] = float(score)
+    if not secondary:
+        secondary = {"neutral": float(intensity_el.text)}
+    return EmotionState(
+        valence=float(valence_el.text),
+        arousal=float(arousal_el.text),
+        dominance=float(dominance_el.text),
+        label=label_el.text,
+        intensity=float(intensity_el.text),
+        secondary_emotions=secondary,
+        updated_at=(
+            datetime.fromisoformat(updated_el.text)
+            if updated_el is not None and updated_el.text
+            else None
+        ),
+    )
+
+
+def _parse_personality_traits_element(
+    element: Optional[ET.Element],
+) -> Optional[PersonalityTraits]:
+    if element is None:
+        return None
+    openness_el = element.find("openness")
+    conscientiousness_el = element.find("conscientiousness")
+    extraversion_el = element.find("extraversion")
+    agreeableness_el = element.find("agreeableness")
+    neuroticism_el = element.find("neuroticism")
+    if (
+        openness_el is None
+        or conscientiousness_el is None
+        or extraversion_el is None
+        or agreeableness_el is None
+        or neuroticism_el is None
+        or openness_el.text is None
+        or conscientiousness_el.text is None
+        or extraversion_el.text is None
+        or agreeableness_el.text is None
+        or neuroticism_el.text is None
+    ):
+        return None
+    return PersonalityTraits(
+        openness=float(openness_el.text),
+        conscientiousness=float(conscientiousness_el.text),
+        extraversion=float(extraversion_el.text),
+        agreeableness=float(agreeableness_el.text),
+        neuroticism=float(neuroticism_el.text),
+    )
+
+
+def _parse_memory_module_xml(xml_payload: str) -> MemoryModuleImportData:
     root = ET.fromstring(xml_payload)
     records: List[MemoryImportRecord] = []
     for memory_el in root.findall("memory"):
@@ -1928,7 +2069,9 @@ def _parse_memory_module_xml(xml_payload: str) -> List[MemoryImportRecord]:
         created_el = memory_el.find("created_at")
         updated_el = memory_el.find("updated_at")
         tags = [tag.text for tag in memory_el.findall("./tags/tag") if tag.text]
-        source_tags = [source.text for source in memory_el.findall("./source_tags/source") if source.text]
+        source_tags = [
+            source.text for source in memory_el.findall("./source_tags/source") if source.text
+        ]
         virtue_markers: Dict[str, float] = {}
         for marker in memory_el.findall("./virtue_markers/marker"):
             name = marker.attrib.get("name")
@@ -1959,7 +2102,42 @@ def _parse_memory_module_xml(xml_payload: str) -> List[MemoryImportRecord]:
                 updated_at=updated_at,
             )
         )
-    return records
+    emotion_state = _parse_emotion_state_element(root.find("emotion_state"))
+    emotion_baseline = _parse_emotion_state_element(root.find("emotion_baseline"))
+    personality_traits = _parse_personality_traits_element(root.find("personality_traits"))
+    routine_phase_el = root.find("routine_phase")
+    routine_phase = routine_phase_el.text if routine_phase_el is not None else None
+    transitions: List[EmotionTransition] = []
+    for transition_el in root.findall("./emotion_transitions/transition"):
+        timestamp_el = transition_el.find("timestamp")
+        event_el = transition_el.find("event")
+        previous_state = _parse_emotion_state_element(transition_el.find("previous_state"))
+        new_state = _parse_emotion_state_element(transition_el.find("new_state"))
+        if (
+            timestamp_el is None
+            or event_el is None
+            or timestamp_el.text is None
+            or event_el.text is None
+            or previous_state is None
+            or new_state is None
+        ):
+            continue
+        transitions.append(
+            EmotionTransition(
+                timestamp=datetime.fromisoformat(timestamp_el.text),
+                event=event_el.text,
+                previous_state=previous_state,
+                new_state=new_state,
+            )
+        )
+    return MemoryModuleImportData(
+        memories=records,
+        emotion_state=emotion_state,
+        emotion_baseline=emotion_baseline,
+        personality_traits=personality_traits,
+        emotion_transitions=transitions,
+        routine_phase=routine_phase,
+    )
 
 
 @app.on_event("startup")
@@ -2351,6 +2529,8 @@ def memory_export_json(
     return MemoryModule(
         memories=_fetch_all_memories(),
         emotion_state=EMOTION_STATE,
+        emotion_baseline=EMOTION_BASELINE,
+        personality_traits=_current_personality_traits(),
         emotion_transitions=list(EMOTION_TRANSITIONS),
         routine_phase=CURRENT_ROUTINE_PHASE,
         trait_history=_fetch_trait_history(),
@@ -2368,6 +2548,8 @@ def memory_export_xml(
         EMOTION_STATE,
         EMOTION_TRANSITIONS,
         CURRENT_ROUTINE_PHASE,
+        _current_personality_traits(),
+        EMOTION_BASELINE,
     )
     return Response(content=xml_payload, media_type="application/xml")
 
@@ -2411,6 +2593,14 @@ def memory_import_json(
             updated_at=updated_at,
         )
         memory_ids.append(created_record.metadata.memory_id)
+    _apply_imported_brain_state(
+        payload.emotion_state,
+        payload.emotion_baseline,
+        payload.emotion_transitions,
+        payload.routine_phase,
+        payload.personality_traits,
+        payload.trait_history,
+    )
     _log_memory_event(
         "import_json",
         user.user_id,
@@ -2428,10 +2618,10 @@ def memory_import_xml(
 ) -> MemoryImportResponse:
     if replace:
         reset_memory_store(user.user_id)
-    records = _parse_memory_module_xml(xml_payload)
+    module_data = _parse_memory_module_xml(xml_payload)
     memory_ids: List[str] = []
-    existing_ids = _existing_memory_ids(record.memory_id for record in records)
-    for record in records:
+    existing_ids = _existing_memory_ids(record.memory_id for record in module_data.memories)
+    for record in module_data.memories:
         _guard_external_source_tags(
             record.source_tags, user_id=user.user_id, action="memory import"
         )
@@ -2455,6 +2645,14 @@ def memory_import_xml(
             updated_at=record.updated_at,
         )
         memory_ids.append(created_record.metadata.memory_id)
+    _apply_imported_brain_state(
+        module_data.emotion_state,
+        module_data.emotion_baseline,
+        module_data.emotion_transitions,
+        module_data.routine_phase,
+        module_data.personality_traits,
+        [],
+    )
     _log_memory_event(
         "import_xml",
         user.user_id,
