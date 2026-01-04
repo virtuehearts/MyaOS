@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 import { ChatWindow } from '@/components/os/ChatWindow';
+import { ConsoleWindow } from '@/components/os/ConsoleWindow';
 import { MemoryWindow } from '@/components/os/MemoryWindow';
 import { SettingsWindow } from '@/components/os/SettingsWindow';
 import type { WindowId } from '@/store/osStore';
@@ -66,6 +67,18 @@ export const appRegistry: AppRegistryEntry[] = [
         onClearBackground={onClearBackground}
       />
     )
+  },
+  {
+    id: 'console',
+    label: 'Console',
+    title: 'Console',
+    description: 'System diagnostics',
+    route: '/apps/console',
+    accent: 'bg-retro-title-active',
+    startMenuSection: 'primary',
+    pinned: false,
+    desktop: false,
+    render: () => <ConsoleWindow />
   }
 ];
 
