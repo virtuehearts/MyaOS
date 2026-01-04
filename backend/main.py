@@ -56,6 +56,9 @@ TRAIT_ANALYSIS_INTERVAL_SECONDS = int(
 )
 TRAIT_HISTORY_LIMIT = int(os.getenv("TRAIT_HISTORY_LIMIT", "120"))
 TRAIT_ANALYSIS_ENABLED = os.getenv("TRAIT_ANALYSIS_ENABLED", "true").lower() == "true"
+REFLECTION_SALIENCE_THRESHOLD = float(
+    os.getenv("REFLECTION_SALIENCE_THRESHOLD", "0.8")
+)
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -163,6 +166,7 @@ class MemoryModule(BaseModel):
     emotion_baseline: EmotionState
     personality_traits: PersonalityTraits
     emotion_transitions: List[EmotionTransition]
+    reflections: List["ReflectionRecord"] = Field(default_factory=list)
     routine_phase: str = "unspecified"
     trait_history: List[PersonalityTraitSnapshot] = Field(default_factory=list)
 
@@ -195,6 +199,14 @@ class MemoryModuleImportData(BaseModel):
     personality_traits: Optional[PersonalityTraits] = None
     emotion_transitions: List[EmotionTransition] = Field(default_factory=list)
     routine_phase: Optional[str] = None
+
+
+class ReflectionRecord(BaseModel):
+    reflection_id: str
+    created_at: datetime
+    event_type: str
+    content: str
+    context: Dict[str, object] = Field(default_factory=dict)
 
 
 class MemoryImportResponse(BaseModel):
@@ -1157,6 +1169,152 @@ def _log_state_transition(
     )
 
 
+def _format_reflection_content(detail: str) -> str:
+    return (
+        "Virtueism reflection: "
+        f"{detail} "
+        "In Sikh context, we keep seva, hukam, and chardi kala in view."
+    )
+
+
+def _emotion_state_context(state: EmotionState) -> Dict[str, object]:
+    return {
+        "valence": state.valence,
+        "arousal": state.arousal,
+        "dominance": state.dominance,
+        "label": state.label,
+        "intensity": state.intensity,
+        "secondary_emotions": state.secondary_emotions,
+        "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+    }
+
+
+def _record_state_transition_reflection(
+    user_id: str,
+    event: str,
+    current_state: EmotionState,
+    new_state: EmotionState,
+) -> None:
+    detail = (
+        "State transition noted after event "
+        f"'{event}': {current_state.label} ➜ {new_state.label}."
+    )
+    _store_reflection_record(
+        user_id,
+        "state_transition",
+        _format_reflection_content(detail),
+        {
+            "event": event,
+            "previous_state": _emotion_state_context(current_state),
+            "new_state": _emotion_state_context(new_state),
+        },
+    )
+
+
+def _should_record_salience_reflection(
+    previous_salience: Optional[float],
+    new_salience: float,
+) -> bool:
+    if new_salience < REFLECTION_SALIENCE_THRESHOLD:
+        return False
+    if previous_salience is None:
+        return True
+    return previous_salience < REFLECTION_SALIENCE_THRESHOLD
+
+
+def _record_salience_reflection(
+    user_id: str,
+    memory_id: str,
+    salience: float,
+    tags: Sequence[str],
+) -> None:
+    detail = (
+        f"Memory {memory_id} reached salience {salience:.2f}, "
+        "marking it as especially meaningful."
+    )
+    _store_reflection_record(
+        user_id,
+        "memory_salience_threshold",
+        _format_reflection_content(detail),
+        {
+            "memory_id": memory_id,
+            "salience": salience,
+            "threshold": REFLECTION_SALIENCE_THRESHOLD,
+            "tags": list(tags),
+        },
+    )
+
+
+def _store_reflection_record(
+    user_id: str,
+    event_type: str,
+    content: str,
+    context: Optional[Dict[str, object]] = None,
+) -> ReflectionRecord:
+    reflection_id = uuid.uuid4().hex
+    created_at = datetime.now(timezone.utc)
+    context_payload = context or {}
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO reflection_logs (
+                    reflection_id, user_id, event_type, content, context, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    reflection_id,
+                    user_id,
+                    event_type,
+                    content,
+                    json.dumps(context_payload),
+                    created_at,
+                ),
+            )
+        connection.commit()
+    return ReflectionRecord(
+        reflection_id=reflection_id,
+        created_at=created_at,
+        event_type=event_type,
+        content=content,
+        context=context_payload,
+    )
+
+
+def _fetch_reflections(user_id: str) -> List[ReflectionRecord]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT reflection_id, created_at, event_type, content, context
+                FROM reflection_logs
+                WHERE user_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (user_id,),
+            )
+            rows = cursor.fetchall()
+    reflections: List[ReflectionRecord] = []
+    for row in rows:
+        context_value: Dict[str, object] = {}
+        if row.get("context"):
+            try:
+                context_value = json.loads(row["context"])
+            except json.JSONDecodeError:
+                context_value = {}
+        reflections.append(
+            ReflectionRecord(
+                reflection_id=row["reflection_id"],
+                created_at=_as_utc(row["created_at"]),
+                event_type=row["event_type"],
+                content=row["content"],
+                context=context_value,
+            )
+        )
+    return reflections
+
+
 def _apply_imported_brain_state(
     emotion_state: Optional[EmotionState],
     emotion_baseline: Optional[EmotionState],
@@ -1950,6 +2108,7 @@ def _memory_module_to_xml(
     routine_phase: str,
     personality_traits: PersonalityTraits,
     emotion_baseline: EmotionState,
+    reflections: Sequence[ReflectionRecord],
 ) -> str:
     root = ET.Element("memory_module")
     ET.SubElement(root, "routine_phase").text = routine_phase
@@ -1963,6 +2122,15 @@ def _memory_module_to_xml(
         ET.SubElement(transition_el, "event").text = transition.event
         _emotion_state_to_xml(transition_el, "previous_state", transition.previous_state)
         _emotion_state_to_xml(transition_el, "new_state", transition.new_state)
+    reflections_el = ET.SubElement(root, "reflections")
+    for reflection in reflections:
+        reflection_el = ET.SubElement(
+            reflections_el, "reflection", id=reflection.reflection_id
+        )
+        ET.SubElement(reflection_el, "created_at").text = reflection.created_at.isoformat()
+        ET.SubElement(reflection_el, "event_type").text = reflection.event_type
+        ET.SubElement(reflection_el, "content").text = reflection.content
+        ET.SubElement(reflection_el, "context").text = json.dumps(reflection.context)
     for record in memories:
         memory_el = ET.SubElement(root, "memory", id=record.metadata.memory_id)
         ET.SubElement(memory_el, "content").text = record.content
@@ -2327,6 +2495,12 @@ def state_update(
         current_state,
         new_state,
     )
+    _record_state_transition_reflection(
+        user.user_id,
+        payload.event,
+        current_state,
+        new_state,
+    )
     transition = EmotionTransition(
         timestamp=new_state.updated_at or datetime.now(timezone.utc),
         event=payload.event,
@@ -2459,7 +2633,15 @@ def memory_add(
         payload.source_tags, user_id=user.user_id, action="memory create"
     )
     _guard_external_content(payload.content, user_id=user.user_id, action="memory create")
-    return _create_memory_record(user.user_id, payload)
+    record = _create_memory_record(user.user_id, payload)
+    if _should_record_salience_reflection(None, record.metadata.salience):
+        _record_salience_reflection(
+            user.user_id,
+            record.metadata.memory_id,
+            record.metadata.salience,
+            record.metadata.tags,
+        )
+    return record
 
 
 @app.get("/memory", response_model=MemoryListResponse)
@@ -2490,6 +2672,7 @@ def memory_update(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryRecord:
+    previous_record = _fetch_memory_record(memory_id)
     if payload.source_tags is not None:
         _guard_external_source_tags(
             payload.source_tags, user_id=user.user_id, action="memory update"
@@ -2501,6 +2684,15 @@ def memory_update(
     updated_record = _update_memory_record(memory_id, payload)
     if not updated_record:
         raise HTTPException(status_code=404, detail="Memory not found")
+    if previous_record and _should_record_salience_reflection(
+        previous_record.metadata.salience, updated_record.metadata.salience
+    ):
+        _record_salience_reflection(
+            user.user_id,
+            updated_record.metadata.memory_id,
+            updated_record.metadata.salience,
+            updated_record.metadata.tags,
+        )
     _rebuild_vector_index()
     _log_memory_event("update", user.user_id, memory_id=memory_id)
     return updated_record
@@ -2525,13 +2717,13 @@ def memory_export_json(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> MemoryModule:
-    _ = user
     return MemoryModule(
         memories=_fetch_all_memories(),
         emotion_state=EMOTION_STATE,
         emotion_baseline=EMOTION_BASELINE,
         personality_traits=_current_personality_traits(),
         emotion_transitions=list(EMOTION_TRANSITIONS),
+        reflections=_fetch_reflections(user.user_id),
         routine_phase=CURRENT_ROUTINE_PHASE,
         trait_history=_fetch_trait_history(),
     )
@@ -2542,7 +2734,6 @@ def memory_export_xml(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> Response:
-    _ = user
     xml_payload = _memory_module_to_xml(
         _fetch_all_memories(),
         EMOTION_STATE,
@@ -2550,6 +2741,7 @@ def memory_export_xml(
         CURRENT_ROUTINE_PHASE,
         _current_personality_traits(),
         EMOTION_BASELINE,
+        _fetch_reflections(user.user_id),
     )
     return Response(content=xml_payload, media_type="application/xml")
 
