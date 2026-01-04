@@ -1,5 +1,5 @@
-import { OsShell } from '@/components/os/OsShell';
+import { BootSequence } from '@/components/os/BootSequence';
 
 export default function HomePage() {
-  return <OsShell />;
+  return <BootSequence />;
 }
