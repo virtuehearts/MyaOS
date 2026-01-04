@@ -72,6 +72,17 @@ class EmotionState(BaseModel):
     valence: float = Field(..., ge=0.0, le=1.0)
     arousal: float = Field(..., ge=0.0, le=1.0)
     dominance: float = Field(..., ge=0.0, le=1.0)
+    label: str = "neutral"
+    intensity: float = Field(0.0, ge=0.0, le=1.0)
+    secondary_emotions: Dict[str, float] = Field(default_factory=dict)
+    updated_at: Optional[datetime] = None
+
+
+class EmotionTransition(BaseModel):
+    timestamp: datetime
+    event: str
+    previous_state: EmotionState
+    new_state: EmotionState
 
 
 class PersonalityTraits(BaseModel):
@@ -108,6 +119,11 @@ class StateUpdateResponse(BaseModel):
     explanation: str
 
 
+class EmotionSnapshot(BaseModel):
+    state: EmotionState
+    transitions: List[EmotionTransition]
+
+
 class MemoryCreateRequest(BaseModel):
     content: str
     tags: List[str] = Field(default_factory=list)
@@ -130,6 +146,8 @@ class MemoryListResponse(BaseModel):
 
 class MemoryModule(BaseModel):
     memories: List[MemoryRecord]
+    emotion_state: EmotionState
+    emotion_transitions: List[EmotionTransition]
 
 
 class MemoryImportRecord(BaseModel):
@@ -781,17 +799,180 @@ def _log_state_transition(
     new_state: EmotionState,
 ) -> None:
     LOGGER.info(
-        "state_transition user_id=%s event=%s current=(%.3f,%.3f,%.3f) new=(%.3f,%.3f,%.3f)",
+        "state_transition user_id=%s event=%s current=(%.3f,%.3f,%.3f,%s,%.3f) new=(%.3f,%.3f,%.3f,%s,%.3f)",
         user_id,
         event,
         current_state.valence,
         current_state.arousal,
         current_state.dominance,
+        current_state.label,
+        current_state.intensity,
         new_state.valence,
         new_state.arousal,
         new_state.dominance,
+        new_state.label,
+        new_state.intensity,
     )
 
+
+EMOTION_BASELINE = EmotionState(
+    valence=0.5,
+    arousal=0.5,
+    dominance=0.5,
+    label="neutral",
+    intensity=0.0,
+    secondary_emotions={"neutral": 0.0},
+)
+EMOTION_DECAY_HALF_LIFE_SECONDS = 300.0
+EMOTION_BLEND_WEIGHT = 0.35
+MAX_EMOTION_TRANSITIONS = 25
+EMOTION_STATE = EmotionState(
+    **EMOTION_BASELINE.dict(),
+    updated_at=datetime.now(timezone.utc),
+)
+EMOTION_TRANSITIONS: List[EmotionTransition] = []
+
+EMOTION_EVENT_RULES = [
+    {
+        "keywords": ("gratitude", "thank", "appreciate"),
+        "label": "proud",
+        "valence": 0.25,
+        "arousal": 0.1,
+        "dominance": 0.15,
+        "intensity": 0.6,
+    },
+    {
+        "keywords": ("threat", "danger", "attack", "risk"),
+        "label": "panicked",
+        "valence": -0.35,
+        "arousal": 0.45,
+        "dominance": -0.25,
+        "intensity": 0.85,
+    },
+    {
+        "keywords": ("praise", "celebrate", "success", "win"),
+        "label": "excited",
+        "valence": 0.3,
+        "arousal": 0.3,
+        "dominance": 0.2,
+        "intensity": 0.7,
+    },
+    {
+        "keywords": ("loss", "failure", "sad", "grief"),
+        "label": "downcast",
+        "valence": -0.3,
+        "arousal": -0.1,
+        "dominance": -0.2,
+        "intensity": 0.6,
+    },
+    {
+        "keywords": ("conflict", "argument", "anger", "frustration"),
+        "label": "frustrated",
+        "valence": -0.2,
+        "arousal": 0.25,
+        "dominance": 0.05,
+        "intensity": 0.55,
+    },
+    {
+        "keywords": ("help", "support", "comfort"),
+        "label": "relieved",
+        "valence": 0.2,
+        "arousal": -0.1,
+        "dominance": 0.1,
+        "intensity": 0.45,
+    },
+]
+
+
+def _event_to_emotion_rule(event: str) -> Dict[str, object]:
+    if not event:
+        return {
+            "label": "neutral",
+            "valence": 0.0,
+            "arousal": 0.0,
+            "dominance": 0.0,
+            "intensity": 0.0,
+        }
+    lowered = event.lower()
+    for rule in EMOTION_EVENT_RULES:
+        if any(keyword in lowered for keyword in rule["keywords"]):
+            return rule
+    return {
+        "label": "neutral",
+        "valence": 0.0,
+        "arousal": 0.0,
+        "dominance": 0.0,
+        "intensity": 0.1,
+    }
+
+
+def _apply_emotion_decay(state: EmotionState, now: datetime) -> EmotionState:
+    if state.updated_at is None:
+        return state
+    elapsed = max(0.0, (now - state.updated_at).total_seconds())
+    if elapsed <= 0.0:
+        return state
+    decay_factor = 0.5 ** (elapsed / EMOTION_DECAY_HALF_LIFE_SECONDS)
+    decayed_valence = _clamp(
+        EMOTION_BASELINE.valence + (state.valence - EMOTION_BASELINE.valence) * decay_factor
+    )
+    decayed_arousal = _clamp(
+        EMOTION_BASELINE.arousal + (state.arousal - EMOTION_BASELINE.arousal) * decay_factor
+    )
+    decayed_dominance = _clamp(
+        EMOTION_BASELINE.dominance
+        + (state.dominance - EMOTION_BASELINE.dominance) * decay_factor
+    )
+    decayed_intensity = _clamp(state.intensity * decay_factor)
+    decayed_label = state.label if decayed_intensity >= 0.15 else "neutral"
+    decayed_secondary = {
+        key: _clamp(value * decay_factor) for key, value in state.secondary_emotions.items()
+    }
+    if not decayed_secondary:
+        decayed_secondary = {"neutral": decayed_intensity}
+    return EmotionState(
+        valence=decayed_valence,
+        arousal=decayed_arousal,
+        dominance=decayed_dominance,
+        label=decayed_label,
+        intensity=decayed_intensity,
+        secondary_emotions=decayed_secondary,
+        updated_at=state.updated_at,
+    )
+
+
+def _blend_emotion_states(
+    base_state: EmotionState, target_state: EmotionState, blend_weight: float
+) -> EmotionState:
+    blend_weight = _clamp(blend_weight)
+    valence = _clamp(
+        (1.0 - blend_weight) * base_state.valence + blend_weight * target_state.valence
+    )
+    arousal = _clamp(
+        (1.0 - blend_weight) * base_state.arousal + blend_weight * target_state.arousal
+    )
+    dominance = _clamp(
+        (1.0 - blend_weight) * base_state.dominance + blend_weight * target_state.dominance
+    )
+    intensity = _clamp(
+        (1.0 - blend_weight) * base_state.intensity
+        + blend_weight * target_state.intensity
+    )
+    label = target_state.label if target_state.intensity >= 0.2 else base_state.label
+    secondary = dict(base_state.secondary_emotions)
+    for name, value in target_state.secondary_emotions.items():
+        secondary[name] = _clamp(
+            (1.0 - blend_weight) * secondary.get(name, 0.0) + blend_weight * value
+        )
+    return EmotionState(
+        valence=valence,
+        arousal=arousal,
+        dominance=dominance,
+        label=label,
+        intensity=intensity,
+        secondary_emotions=secondary,
+        updated_at=target_state.updated_at,
+    )
 
 
 
@@ -805,20 +986,32 @@ def _deterministic_event_signal(event: str) -> float:
 def update_emotion_state(
     current_state: EmotionState, traits: PersonalityTraits, event: str
 ) -> EmotionState:
+    now = datetime.now(timezone.utc)
+    decayed_state = _apply_emotion_decay(current_state, now)
     signal = _deterministic_event_signal(event)
-    valence_shift = (traits.extraversion - traits.neuroticism) * 0.15
-    arousal_shift = (signal - 0.5) * 0.2
-    dominance_shift = (traits.conscientiousness - 0.5) * 0.1
+    rule = _event_to_emotion_rule(event)
 
-    new_valence = _clamp(current_state.valence + valence_shift + (signal - 0.5) * 0.05)
-    new_arousal = _clamp(current_state.arousal + arousal_shift)
-    new_dominance = _clamp(current_state.dominance + dominance_shift)
-
-    return EmotionState(
-        valence=new_valence,
-        arousal=new_arousal,
-        dominance=new_dominance,
+    valence_shift = (
+        rule["valence"]
+        + (traits.extraversion - traits.neuroticism) * 0.15
+        + (signal - 0.5) * 0.05
     )
+    arousal_shift = rule["arousal"] + (signal - 0.5) * 0.2
+    dominance_shift = rule["dominance"] + (traits.conscientiousness - 0.5) * 0.1
+
+    target_state = EmotionState(
+        valence=_clamp(decayed_state.valence + valence_shift),
+        arousal=_clamp(decayed_state.arousal + arousal_shift),
+        dominance=_clamp(decayed_state.dominance + dominance_shift),
+        label=str(rule["label"]),
+        intensity=_clamp(float(rule["intensity"]) + abs(signal - 0.5) * 0.6),
+        secondary_emotions={str(rule["label"]): _clamp(float(rule["intensity"]))},
+        updated_at=now,
+    )
+
+    blended = _blend_emotion_states(decayed_state, target_state, EMOTION_BLEND_WEIGHT)
+    blended.updated_at = now
+    return blended
 
 
 def _generate_memory_id(connection: pymysql.connections.Connection) -> str:
@@ -1247,8 +1440,40 @@ def _delete_memory_record(memory_id: str) -> bool:
     return deleted
 
 
-def _memory_module_to_xml(memories: List[MemoryRecord]) -> str:
+def _memory_module_to_xml(
+    memories: List[MemoryRecord],
+    emotion_state: EmotionState,
+    emotion_transitions: Sequence[EmotionTransition],
+) -> str:
     root = ET.Element("memory_module")
+    emotion_el = ET.SubElement(root, "emotion_state")
+    ET.SubElement(emotion_el, "valence").text = str(emotion_state.valence)
+    ET.SubElement(emotion_el, "arousal").text = str(emotion_state.arousal)
+    ET.SubElement(emotion_el, "dominance").text = str(emotion_state.dominance)
+    ET.SubElement(emotion_el, "label").text = emotion_state.label
+    ET.SubElement(emotion_el, "intensity").text = str(emotion_state.intensity)
+    if emotion_state.updated_at:
+        ET.SubElement(emotion_el, "updated_at").text = emotion_state.updated_at.isoformat()
+    secondary_el = ET.SubElement(emotion_el, "secondary_emotions")
+    for name, value in emotion_state.secondary_emotions.items():
+        ET.SubElement(secondary_el, "emotion", name=name, score=str(value))
+    transitions_el = ET.SubElement(root, "emotion_transitions")
+    for transition in emotion_transitions:
+        transition_el = ET.SubElement(transitions_el, "transition")
+        ET.SubElement(transition_el, "timestamp").text = transition.timestamp.isoformat()
+        ET.SubElement(transition_el, "event").text = transition.event
+        previous_el = ET.SubElement(transition_el, "previous_state")
+        ET.SubElement(previous_el, "valence").text = str(transition.previous_state.valence)
+        ET.SubElement(previous_el, "arousal").text = str(transition.previous_state.arousal)
+        ET.SubElement(previous_el, "dominance").text = str(transition.previous_state.dominance)
+        ET.SubElement(previous_el, "label").text = transition.previous_state.label
+        ET.SubElement(previous_el, "intensity").text = str(transition.previous_state.intensity)
+        new_el = ET.SubElement(transition_el, "new_state")
+        ET.SubElement(new_el, "valence").text = str(transition.new_state.valence)
+        ET.SubElement(new_el, "arousal").text = str(transition.new_state.arousal)
+        ET.SubElement(new_el, "dominance").text = str(transition.new_state.dominance)
+        ET.SubElement(new_el, "label").text = transition.new_state.label
+        ET.SubElement(new_el, "intensity").text = str(transition.new_state.intensity)
     for record in memories:
         memory_el = ET.SubElement(root, "memory", id=record.metadata.memory_id)
         ET.SubElement(memory_el, "content").text = record.content
@@ -1485,16 +1710,42 @@ def state_update(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> StateUpdateResponse:
-    new_state = update_emotion_state(payload.current_state, payload.traits, payload.event)
+    global EMOTION_STATE
+    current_state = payload.current_state
+    if current_state.updated_at is None and EMOTION_STATE.updated_at is not None:
+        current_state = EMOTION_STATE
+    new_state = update_emotion_state(current_state, payload.traits, payload.event)
     _log_state_transition(
         user.user_id,
         payload.event,
-        payload.current_state,
+        current_state,
         new_state,
     )
+    transition = EmotionTransition(
+        timestamp=new_state.updated_at or datetime.now(timezone.utc),
+        event=payload.event,
+        previous_state=current_state,
+        new_state=new_state,
+    )
+    EMOTION_STATE = new_state
+    EMOTION_TRANSITIONS.append(transition)
+    if len(EMOTION_TRANSITIONS) > MAX_EMOTION_TRANSITIONS:
+        EMOTION_TRANSITIONS.pop(0)
     return StateUpdateResponse(
         new_state=new_state,
-        explanation="Deterministic placeholder update based on traits and event signal.",
+        explanation="Blended deterministic update with decay, event rules, and trait shaping.",
+    )
+
+
+@app.get("/state/snapshot", response_model=EmotionSnapshot)
+def state_snapshot(
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> EmotionSnapshot:
+    _ = user
+    return EmotionSnapshot(
+        state=EMOTION_STATE,
+        transitions=list(EMOTION_TRANSITIONS),
     )
 
 
@@ -1655,7 +1906,12 @@ def memory_export_json(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> MemoryModule:
-    return MemoryModule(memories=_fetch_all_memories())
+    _ = user
+    return MemoryModule(
+        memories=_fetch_all_memories(),
+        emotion_state=EMOTION_STATE,
+        emotion_transitions=list(EMOTION_TRANSITIONS),
+    )
 
 
 @app.get("/memory/export/xml")
@@ -1663,7 +1919,12 @@ def memory_export_xml(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> Response:
-    xml_payload = _memory_module_to_xml(_fetch_all_memories())
+    _ = user
+    xml_payload = _memory_module_to_xml(
+        _fetch_all_memories(),
+        EMOTION_STATE,
+        EMOTION_TRANSITIONS,
+    )
     return Response(content=xml_payload, media_type="application/xml")
 
 
