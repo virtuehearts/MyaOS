@@ -3,10 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { AuthOverlay } from '@/components/os/AuthOverlay';
-import { ChatWindow } from '@/components/os/ChatWindow';
-import { MemoryWindow } from '@/components/os/MemoryWindow';
+import { appRegistry, appRegistryById } from '@/components/os/appRegistry';
 import { OsWindow } from '@/components/os/OsWindow';
-import { SettingsWindow } from '@/components/os/SettingsWindow';
 import { StartMenu } from '@/components/os/StartMenu';
 import { Taskbar } from '@/components/os/Taskbar';
 import { apiRequest } from '@/lib/api';
@@ -16,6 +14,7 @@ import { useOsStore, type WindowId } from '@/store/osStore';
 export function OsShell() {
   const {
     windows,
+    activeWindowId,
     closeWindow,
     focusWindow,
     toggleMinimize,
@@ -27,10 +26,6 @@ export function OsShell() {
   const [desktopBackground, setDesktopBackground] = useState<string | null>(null);
   const { token, user, setUser, clearSession, status, setStatus } = useAuthStore();
   const startButtonRef = useRef<HTMLButtonElement>(null);
-
-  const chatWindow = windows.find((window) => window.id === 'chat');
-  const memoryWindow = windows.find((window) => window.id === 'memory');
-  const settingsWindow = windows.find((window) => window.id === 'settings');
 
   useEffect(() => {
     if (!token || user) {
@@ -71,6 +66,27 @@ export function OsShell() {
     focusWindow(id);
   };
 
+  const windowContext = {
+    desktopBackground,
+    onBackgroundSelect: (file: File) => {
+      const url = URL.createObjectURL(file);
+      setDesktopBackground((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return url;
+      });
+    },
+    onClearBackground: () => {
+      setDesktopBackground((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return null;
+      });
+    }
+  };
+
   return (
     <div
       className="relative min-h-[100dvh] w-full overflow-hidden bg-retro-bg p-6"
@@ -93,122 +109,54 @@ export function OsShell() {
         </div>
       )}
 
-      {chatWindow?.isOpen && (
-        <OsWindow
-          id="chat"
-          title="Mya Chat"
-          isActive={chatWindow.id === 'chat'}
-          isMinimized={chatWindow.isMinimized}
-          width={chatWindow.width}
-          height={chatWindow.height}
-          minWidth={chatWindow.minWidth}
-          minHeight={chatWindow.minHeight}
-          zIndex={chatWindow.zIndex}
-          onClose={() => closeWindow('chat')}
-          onMinimize={() => toggleMinimize('chat')}
-          onFocus={() => focusWindow('chat')}
-          onResizeStart={() => setWindowResizing('chat', true)}
-          onResizeStop={(size) => {
-            setWindowSize('chat', size);
-            setWindowResizing('chat', false);
-          }}
-        >
-          <ChatWindow />
-        </OsWindow>
-      )}
-
-      {memoryWindow?.isOpen && (
-        <OsWindow
-          id="memory"
-          title="Memory Vault"
-          isActive={memoryWindow.id === 'memory'}
-          isMinimized={memoryWindow.isMinimized}
-          width={memoryWindow.width}
-          height={memoryWindow.height}
-          minWidth={memoryWindow.minWidth}
-          minHeight={memoryWindow.minHeight}
-          zIndex={memoryWindow.zIndex}
-          onClose={() => closeWindow('memory')}
-          onMinimize={() => toggleMinimize('memory')}
-          onFocus={() => focusWindow('memory')}
-          onResizeStart={() => setWindowResizing('memory', true)}
-          onResizeStop={(size) => {
-            setWindowSize('memory', size);
-            setWindowResizing('memory', false);
-          }}
-        >
-          <MemoryWindow />
-        </OsWindow>
-      )}
-
-      {settingsWindow?.isOpen && (
-        <OsWindow
-          id="settings"
-          title="System Settings"
-          isActive={settingsWindow.id === 'settings'}
-          isMinimized={settingsWindow.isMinimized}
-          width={settingsWindow.width}
-          height={settingsWindow.height}
-          minWidth={settingsWindow.minWidth}
-          minHeight={settingsWindow.minHeight}
-          zIndex={settingsWindow.zIndex}
-          onClose={() => closeWindow('settings')}
-          onMinimize={() => toggleMinimize('settings')}
-          onFocus={() => focusWindow('settings')}
-          onResizeStart={() => setWindowResizing('settings', true)}
-          onResizeStop={(size) => {
-            setWindowSize('settings', size);
-            setWindowResizing('settings', false);
-          }}
-        >
-          <SettingsWindow
-            desktopBackground={desktopBackground}
-            onBackgroundSelect={(file) => {
-              const url = URL.createObjectURL(file);
-              setDesktopBackground((prev) => {
-                if (prev) {
-                  URL.revokeObjectURL(prev);
-                }
-                return url;
-              });
+      {windows.map((window) => {
+        if (!window.isOpen) {
+          return null;
+        }
+        const entry = appRegistryById.get(window.id);
+        if (!entry) {
+          return null;
+        }
+        return (
+          <OsWindow
+            key={window.id}
+            id={window.id}
+            title={entry.title}
+            isActive={activeWindowId === window.id}
+            isMinimized={window.isMinimized}
+            width={window.width}
+            height={window.height}
+            minWidth={window.minWidth}
+            minHeight={window.minHeight}
+            zIndex={window.zIndex}
+            onClose={() => closeWindow(window.id)}
+            onMinimize={() => toggleMinimize(window.id)}
+            onFocus={() => focusWindow(window.id)}
+            onResizeStart={() => setWindowResizing(window.id, true)}
+            onResizeStop={(size) => {
+              setWindowSize(window.id, size);
+              setWindowResizing(window.id, false);
             }}
-            onClearBackground={() => {
-              setDesktopBackground((prev) => {
-                if (prev) {
-                  URL.revokeObjectURL(prev);
-                }
-                return null;
-              });
-            }}
-          />
-        </OsWindow>
-      )}
+          >
+            {entry.render(windowContext)}
+          </OsWindow>
+        );
+      })}
 
       <div className="absolute left-4 top-4 flex flex-col gap-4 text-xs text-retro-text">
-        <button
-          type="button"
-          className="flex w-20 flex-col items-center gap-2 border border-retro-border bg-retro-surface px-2 py-2"
-          onClick={() => handleDesktopLaunch('chat')}
-        >
-          <span className="h-8 w-8 border border-retro-border bg-retro-title-active" />
-          <span>Chat</span>
-        </button>
-        <button
-          type="button"
-          className="flex w-20 flex-col items-center gap-2 border border-retro-border bg-retro-surface px-2 py-2"
-          onClick={() => handleDesktopLaunch('memory')}
-        >
-          <span className="h-8 w-8 border border-retro-border bg-retro-title-active" />
-          <span>Memory</span>
-        </button>
-        <button
-          type="button"
-          className="flex w-20 flex-col items-center gap-2 border border-retro-border bg-retro-surface px-2 py-2"
-          onClick={() => handleDesktopLaunch('settings')}
-        >
-          <span className="h-8 w-8 border border-retro-border bg-retro-title-active" />
-          <span>Settings</span>
-        </button>
+        {appRegistry
+          .filter((app) => app.desktop)
+          .map((app) => (
+            <button
+              key={app.id}
+              type="button"
+              className="flex w-20 flex-col items-center gap-2 border border-retro-border bg-retro-surface px-2 py-2"
+              onClick={() => handleDesktopLaunch(app.id)}
+            >
+              <span className={`h-8 w-8 border border-retro-border ${app.accent}`} />
+              <span>{app.label}</span>
+            </button>
+          ))}
       </div>
 
       <StartMenu

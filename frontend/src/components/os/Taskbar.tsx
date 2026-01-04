@@ -1,15 +1,10 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { appRegistry } from '@/components/os/appRegistry';
 import { cn } from '@/lib/utils';
 import { useOsStore, type WindowId } from '@/store/osStore';
 import type { Ref } from 'react';
-
-const pinnedApps: Array<{ id: WindowId; label: string }> = [
-  { id: 'chat', label: 'Chat' },
-  { id: 'memory', label: 'Memory' },
-  { id: 'settings', label: 'Settings' }
-];
 
 interface TaskbarProps {
   isStartOpen: boolean;
@@ -40,6 +35,7 @@ export function Taskbar({
 
   const now = new Date();
   const clockLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const pinnedApps = appRegistry.filter((app) => app.pinned);
 
   return (
     <footer className="fixed bottom-0 left-0 z-50 w-full border-t border-retro-border bg-retro-surface">

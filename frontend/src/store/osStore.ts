@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
 
 export type WindowId = 'chat' | 'memory' | 'settings';
 
@@ -65,50 +66,69 @@ const baseWindows: OsWindowState[] = [
   }
 ];
 
-export const useOsStore = create<OsStore>((set) => ({
-  windows: baseWindows,
-  activeWindowId: 'chat',
-  openWindow: (id) =>
-    set((state) => ({
-      windows: state.windows.map((window) =>
-        window.id === id
-          ? { ...window, isOpen: true, isMinimized: false, zIndex: 20 }
-          : window
-      ),
-      activeWindowId: id
-    })),
-  closeWindow: (id) =>
-    set((state) => ({
-      windows: state.windows.map((window) =>
-        window.id === id ? { ...window, isOpen: false } : window
-      ),
-      activeWindowId: state.activeWindowId === id ? null : state.activeWindowId
-    })),
-  focusWindow: (id) =>
-    set((state) => ({
-      windows: state.windows.map((window) =>
-        window.id === id ? { ...window, zIndex: 30, isMinimized: false } : window
-      ),
-      activeWindowId: id
-    })),
-  toggleMinimize: (id) =>
-    set((state) => ({
-      windows: state.windows.map((window) =>
-        window.id === id
-          ? { ...window, isMinimized: !window.isMinimized }
-          : window
-      )
-    })),
-  setWindowSize: (id, size) =>
-    set((state) => ({
-      windows: state.windows.map((window) =>
-        window.id === id ? { ...window, ...size } : window
-      )
-    })),
-  setWindowResizing: (id, isResizing) =>
-    set((state) => ({
-      windows: state.windows.map((window) =>
-        window.id === id ? { ...window, isResizing } : window
-      )
-    }))
-}));
+const storage =
+  typeof window === 'undefined'
+    ? undefined
+    : createJSONStorage(() => window.localStorage);
+
+export const useOsStore = create<OsStore>()(
+  persist(
+    (set) => ({
+      windows: baseWindows,
+      activeWindowId: 'chat',
+      openWindow: (id) =>
+        set((state) => ({
+          windows: state.windows.map((window) =>
+            window.id === id
+              ? { ...window, isOpen: true, isMinimized: false, zIndex: 20 }
+              : window
+          ),
+          activeWindowId: id
+        })),
+      closeWindow: (id) =>
+        set((state) => ({
+          windows: state.windows.map((window) =>
+            window.id === id ? { ...window, isOpen: false } : window
+          ),
+          activeWindowId: state.activeWindowId === id ? null : state.activeWindowId
+        })),
+      focusWindow: (id) =>
+        set((state) => ({
+          windows: state.windows.map((window) =>
+            window.id === id
+              ? { ...window, zIndex: 30, isMinimized: false }
+              : window
+          ),
+          activeWindowId: id
+        })),
+      toggleMinimize: (id) =>
+        set((state) => ({
+          windows: state.windows.map((window) =>
+            window.id === id
+              ? { ...window, isMinimized: !window.isMinimized }
+              : window
+          )
+        })),
+      setWindowSize: (id, size) =>
+        set((state) => ({
+          windows: state.windows.map((window) =>
+            window.id === id ? { ...window, ...size } : window
+          )
+        })),
+      setWindowResizing: (id, isResizing) =>
+        set((state) => ({
+          windows: state.windows.map((window) =>
+            window.id === id ? { ...window, isResizing } : window
+          )
+        }))
+    }),
+    {
+      name: 'mya-os-store',
+      storage,
+      partialize: (state) => ({
+        windows: state.windows,
+        activeWindowId: state.activeWindowId
+      })
+    }
+  )
+);

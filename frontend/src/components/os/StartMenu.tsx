@@ -5,6 +5,7 @@ import { apiRequest } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/store/authStore';
 import { useOsStore, type WindowId } from '@/store/osStore';
+import { appRegistry } from '@/components/os/appRegistry';
 import { useEffect, useMemo, useState, type CSSProperties, type RefObject } from 'react';
 
 interface StartMenuProps {
@@ -13,28 +14,7 @@ interface StartMenuProps {
   anchorRef: RefObject<HTMLButtonElement>;
 }
 
-const startMenuApps = [
-  {
-    id: 'chat',
-    label: 'Mya Chat',
-    description: 'Companion messaging',
-    windowId: 'chat' as WindowId,
-    accent: 'bg-retro-title-active'
-  },
-  {
-    id: 'memory',
-    label: 'Memory Vault',
-    description: 'Recall snippets',
-    windowId: 'memory' as WindowId,
-    accent: 'bg-retro-accent'
-  },
-  {
-    id: 'settings',
-    label: 'System Settings',
-    description: 'Tweak the OS',
-    windowId: 'settings' as WindowId,
-    accent: 'bg-retro-border'
-  },
+const comingSoonApps = [
   {
     id: 'calculator',
     label: 'Calculator',
@@ -51,17 +31,41 @@ const startMenuApps = [
   }
 ] as const;
 
-type StartMenuApp = (typeof startMenuApps)[number];
+type StartMenuApp = {
+  id: string;
+  label: string;
+  description: string;
+  accent: string;
+  windowId: WindowId | null;
+  disabled: boolean;
+};
 
 export function StartMenu({ isOpen, onClose, anchorRef }: StartMenuProps) {
   const { user, token, clearSession } = useAuthStore();
   const { openWindow, focusWindow } = useOsStore();
   const [anchorStyle, setAnchorStyle] = useState<CSSProperties | null>(null);
 
-  const menuApps = useMemo(
-    () => startMenuApps.map((app) => ({ ...app, disabled: !app.windowId })),
-    []
-  );
+  const menuApps = useMemo(() => {
+    const registryApps: StartMenuApp[] = appRegistry
+      .filter((app) => app.startMenuSection === 'primary')
+      .map((app) => ({
+        id: app.id,
+        label: app.label,
+        description: app.description,
+        accent: app.accent,
+        windowId: app.id,
+        disabled: false
+      }));
+    const comingSoon: StartMenuApp[] = comingSoonApps.map((app) => ({
+      id: app.id,
+      label: app.label,
+      description: app.description,
+      accent: app.accent,
+      windowId: app.windowId,
+      disabled: true
+    }));
+    return { registryApps, comingSoon };
+  }, []);
 
   useEffect(() => {
     const updateAnchor = () => {
@@ -130,7 +134,7 @@ export function StartMenu({ isOpen, onClose, anchorRef }: StartMenuProps) {
           <div className="px-3 pb-1 text-[10px] uppercase text-retro-accent">
             Local Programs
           </div>
-          {menuApps.slice(0, 3).map((app) => (
+          {menuApps.registryApps.map((app) => (
             <Button
               key={app.id}
               variant="ghost"
@@ -155,7 +159,7 @@ export function StartMenu({ isOpen, onClose, anchorRef }: StartMenuProps) {
           <div className="mt-2 px-3 pb-1 text-[10px] uppercase text-retro-accent">
             Coming Soon
           </div>
-          {menuApps.slice(3).map((app) => (
+          {menuApps.comingSoon.map((app) => (
             <Button
               key={app.id}
               variant="ghost"
