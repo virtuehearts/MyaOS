@@ -50,3 +50,14 @@ CREATE TABLE personality_trait_history (
     neuroticism DECIMAL(4, 3) NOT NULL DEFAULT 0.500,
     signal_summary JSON NULL
 );
+
+CREATE TABLE reflection_logs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    reflection_id VARCHAR(32) NOT NULL UNIQUE,
+    user_id VARCHAR(64) NOT NULL,
+    event_type VARCHAR(64) NOT NULL,
+    content TEXT NOT NULL,
+    context JSON NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_reflection_user_created (user_id, created_at)
+);
