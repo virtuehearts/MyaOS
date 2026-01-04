@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { AuthOverlay } from '@/components/os/AuthOverlay';
 import { ChatWindow } from '@/components/os/ChatWindow';
@@ -26,6 +26,7 @@ export function OsShell() {
   const [startMenuOpen, setStartMenuOpen] = useState(false);
   const [desktopBackground, setDesktopBackground] = useState<string | null>(null);
   const { token, user, setUser, clearSession, status, setStatus } = useAuthStore();
+  const startButtonRef = useRef<HTMLButtonElement>(null);
 
   const chatWindow = windows.find((window) => window.id === 'chat');
   const memoryWindow = windows.find((window) => window.id === 'memory');
@@ -210,11 +211,16 @@ export function OsShell() {
         </button>
       </div>
 
-      <StartMenu isOpen={startMenuOpen} onClose={() => setStartMenuOpen(false)} />
+      <StartMenu
+        isOpen={startMenuOpen}
+        onClose={() => setStartMenuOpen(false)}
+        anchorRef={startButtonRef}
+      />
       <Taskbar
         isStartOpen={startMenuOpen}
         onToggleStart={() => setStartMenuOpen((open) => !open)}
         isStartDisabled={!user}
+        startButtonRef={startButtonRef}
       />
     </div>
   );

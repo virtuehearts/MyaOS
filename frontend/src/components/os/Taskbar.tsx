@@ -3,6 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useOsStore, type WindowId } from '@/store/osStore';
+import type { Ref } from 'react';
 
 const pinnedApps: Array<{ id: WindowId; label: string }> = [
   { id: 'chat', label: 'Chat' },
@@ -14,9 +15,15 @@ interface TaskbarProps {
   isStartOpen: boolean;
   onToggleStart: () => void;
   isStartDisabled?: boolean;
+  startButtonRef?: Ref<HTMLButtonElement>;
 }
 
-export function Taskbar({ isStartOpen, onToggleStart, isStartDisabled }: TaskbarProps) {
+export function Taskbar({
+  isStartOpen,
+  onToggleStart,
+  isStartDisabled,
+  startButtonRef
+}: TaskbarProps) {
   const { windows, openWindow, focusWindow } = useOsStore();
 
   const handleLaunch = (id: WindowId) => {
@@ -42,6 +49,7 @@ export function Taskbar({ isStartOpen, onToggleStart, isStartDisabled }: Taskbar
           className={cn('h-8 px-3 font-semibold', isStartOpen && 'bg-retro-title-active')}
           onClick={onToggleStart}
           disabled={isStartDisabled}
+          ref={startButtonRef}
         >
           MyaOS
         </Button>
