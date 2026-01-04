@@ -16,6 +16,22 @@ import { useChatStore } from '@/store/chatStore';
 const makeId = () =>
   typeof crypto !== 'undefined' ? crypto.randomUUID() : `${Date.now()}`;
 
+const CONTROL_BLOCK_START = '<control>';
+const CONTROL_BLOCK_END = '</control>';
+
+const stripControlBlock = (content: string) => {
+  const start = content.indexOf(CONTROL_BLOCK_START);
+  const end = content.indexOf(CONTROL_BLOCK_END);
+  if (start === -1 || end === -1 || end < start) {
+    return { cleaned: content.trim(), control: null };
+  }
+  const control = content.slice(start + CONTROL_BLOCK_START.length, end).trim();
+  const cleaned = `${content.slice(0, start)}${content.slice(
+    end + CONTROL_BLOCK_END.length
+  )}`.trim();
+  return { cleaned, control };
+};
+
 export function ChatWindow() {
   const { apiKey } = useApiKeyStore();
   const {
@@ -33,6 +49,7 @@ export function ChatWindow() {
   const [lastRequest, setLastRequest] = useState<OpenRouterChatOptions | null>(
     null
   );
+  const [controlState, setControlState] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const hasApiKey = Boolean(apiKey);
@@ -54,13 +71,17 @@ export function ChatWindow() {
 
     try {
       const response = await createOpenRouterChatCompletion(request);
+      const { cleaned, control } = stripControlBlock(response);
 
       addMessage({
         id: makeId(),
         role: 'assistant',
-        content: response || '...thinking...',
+        content: cleaned || '...thinking...',
         createdAt: Date.now()
       });
+      if (control) {
+        setControlState(control);
+      }
       setStatus('idle');
       setLastRequest(null);
     } catch (err) {
@@ -93,6 +114,16 @@ export function ChatWindow() {
             }
           ]
         : []),
+      {
+        role: 'system' as const,
+        content: [
+          'Include control data for emotional-state processing in a <control>...</control> block at the end of your reply.',
+          'The control block should contain only control JSON and should never be user-facing content.',
+          controlState ? `Previous control data:\n${controlState}` : null
+        ]
+          .filter(Boolean)
+          .join('\n')
+      },
       ...messages.map((message) => ({
         role: message.role,
         content: message.content

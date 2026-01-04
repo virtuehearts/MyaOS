@@ -42,7 +42,7 @@ export const useChatStore = create<ChatStore>()(
     (set) => ({
       messages: [],
       memory: [],
-      model: 'openai/gpt-4o-mini',
+      model: 'nvidia/nemotron-nano-12b-v2-vl:free',
       temperature: 0.7,
       useMemory: true,
       addMessage: (message) =>
