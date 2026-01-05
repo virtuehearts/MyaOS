@@ -19,6 +19,7 @@ export interface OsWindowState {
 interface OsStore {
   windows: OsWindowState[];
   activeWindowId: WindowId | null;
+  nextZIndex: number;
   openWindow: (id: WindowId) => void;
   closeWindow: (id: WindowId) => void;
   focusWindow: (id: WindowId) => void;
@@ -90,6 +91,9 @@ const baseWindows: OsWindowState[] = [
   }
 ];
 
+const initialNextZIndex =
+  Math.max(...baseWindows.map((window) => window.zIndex)) + 1;
+
 const storage =
   typeof window === 'undefined'
     ? undefined
@@ -100,15 +104,25 @@ export const useOsStore = create<OsStore>()(
     (set) => ({
       windows: baseWindows,
       activeWindowId: 'chat',
+      nextZIndex: initialNextZIndex,
       openWindow: (id) =>
-        set((state) => ({
-          windows: state.windows.map((window) =>
-            window.id === id
-              ? { ...window, isOpen: true, isMinimized: false, zIndex: 20 }
-              : window
-          ),
-          activeWindowId: id
-        })),
+        set((state) => {
+          const nextZIndex = state.nextZIndex + 1;
+          return {
+            windows: state.windows.map((window) =>
+              window.id === id
+                ? {
+                    ...window,
+                    isOpen: true,
+                    isMinimized: false,
+                    zIndex: nextZIndex
+                  }
+                : window
+            ),
+            activeWindowId: id,
+            nextZIndex
+          };
+        }),
       closeWindow: (id) =>
         set((state) => ({
           windows: state.windows.map((window) =>
@@ -117,14 +131,18 @@ export const useOsStore = create<OsStore>()(
           activeWindowId: state.activeWindowId === id ? null : state.activeWindowId
         })),
       focusWindow: (id) =>
-        set((state) => ({
-          windows: state.windows.map((window) =>
-            window.id === id
-              ? { ...window, zIndex: 30, isMinimized: false }
-              : window
-          ),
-          activeWindowId: id
-        })),
+        set((state) => {
+          const nextZIndex = state.nextZIndex + 1;
+          return {
+            windows: state.windows.map((window) =>
+              window.id === id
+                ? { ...window, zIndex: nextZIndex, isMinimized: false }
+                : window
+            ),
+            activeWindowId: id,
+            nextZIndex
+          };
+        }),
       toggleMinimize: (id) =>
         set((state) => ({
           windows: state.windows.map((window) =>
@@ -151,7 +169,8 @@ export const useOsStore = create<OsStore>()(
       storage,
       partialize: (state) => ({
         windows: state.windows,
-        activeWindowId: state.activeWindowId
+        activeWindowId: state.activeWindowId,
+        nextZIndex: state.nextZIndex
       })
     }
   )

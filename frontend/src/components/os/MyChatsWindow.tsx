@@ -23,7 +23,7 @@ export function MyChatsWindow() {
     archiveSession,
     deleteSession
   } = useChatStore();
-  const { openWindow, focusWindow } = useOsStore();
+  const { openWindow } = useOsStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState('');
   const [exportStatus, setExportStatus] = useState<'idle' | 'exporting'>('idle');
@@ -40,7 +40,6 @@ export function MyChatsWindow() {
   const handleOpen = (id: string) => {
     setActiveSessionId(id);
     openWindow('chat');
-    focusWindow('chat');
   };
 
   const handleRenameStart = (id: string, name: string) => {
@@ -97,7 +96,6 @@ export function MyChatsWindow() {
             onClick={() => {
               createSession();
               openWindow('chat');
-              focusWindow('chat');
             }}
           >
             New Chat
