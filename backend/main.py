@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -18,8 +19,8 @@ import uuid
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 import xml.etree.ElementTree as ET
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from langchain_community.vectorstores import FAISS
@@ -71,6 +72,23 @@ TRAIT_ANALYSIS_ENABLED = os.getenv("TRAIT_ANALYSIS_ENABLED", "true").lower() == 
 REFLECTION_SALIENCE_THRESHOLD = float(
     os.getenv("REFLECTION_SALIENCE_THRESHOLD", "0.8")
 )
+FILE_STORAGE_ROOT = os.getenv(
+    "FILE_STORAGE_ROOT", os.path.join(os.path.dirname(__file__), "storage")
+)
+FILE_BUCKETS = {
+    "memories": {
+        "path": os.path.join(FILE_STORAGE_ROOT, "memories"),
+        "extensions": {".zip"},
+    },
+    "mp3": {
+        "path": os.path.join(FILE_STORAGE_ROOT, "mp3"),
+        "extensions": {".mp3"},
+    },
+    "backgrounds": {
+        "path": os.path.join(FILE_STORAGE_ROOT, "backgrounds"),
+        "extensions": {".png", ".jpg", ".jpeg", ".gif", ".webp"},
+    },
+}
 
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -224,6 +242,26 @@ class ReflectionRecord(BaseModel):
 class MemoryImportResponse(BaseModel):
     imported: int
     memory_ids: List[str]
+
+
+class FileEntry(BaseModel):
+    name: str
+    size: int
+    modified: datetime
+    type: str = "file"
+
+
+class FileListResponse(BaseModel):
+    entries: List[FileEntry]
+
+
+class FileRenameRequest(BaseModel):
+    bucket: str
+    from_path: str = Field(..., alias="from")
+    to_path: str = Field(..., alias="to")
+
+    class Config:
+        allow_population_by_field_name = True
 
 
 class UserProfile(BaseModel):
@@ -616,6 +654,60 @@ def _rate_limit(scope: str, limit: int, window_seconds: int):
         RATE_LIMITER.check(key, limit=limit, window_seconds=window_seconds)
 
     return _dependency
+
+
+def _get_bucket_config(bucket: str) -> Dict[str, object]:
+    normalized = bucket.lower().strip()
+    config = FILE_BUCKETS.get(normalized)
+    if not config:
+        raise HTTPException(status_code=400, detail="Unsupported bucket.")
+    return config
+
+
+def _normalize_request_path(path: str) -> str:
+    normalized = os.path.normpath(path).replace("\\", "/")
+    if normalized in ("", ".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    if os.path.isabs(normalized) or normalized.startswith("../"):
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    return normalized.lstrip("/")
+
+
+def _ensure_allowed_extension(bucket: str, filename: str) -> None:
+    if not _is_allowed_extension(bucket, filename):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file extension for {bucket}.",
+        )
+
+
+def _is_allowed_extension(bucket: str, filename: str) -> bool:
+    config = _get_bucket_config(bucket)
+    ext = os.path.splitext(filename)[1].lower()
+    allowed = config["extensions"]
+    return ext in allowed
+
+
+def _resolve_bucket_path(bucket: str, requested_path: str) -> Tuple[str, str]:
+    config = _get_bucket_config(bucket)
+    base_dir = config["path"]
+    normalized = _normalize_request_path(requested_path)
+    full_path = os.path.normpath(os.path.join(base_dir, normalized))
+    if os.path.commonpath([base_dir, full_path]) != base_dir:
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    _ensure_allowed_extension(bucket, normalized)
+    return base_dir, full_path
+
+
+def _build_file_entry(base_dir: str, full_path: str) -> FileEntry:
+    stat_info = os.stat(full_path)
+    relative = os.path.relpath(full_path, base_dir).replace(os.sep, "/")
+    return FileEntry(
+        name=relative,
+        size=stat_info.st_size,
+        modified=datetime.fromtimestamp(stat_info.st_mtime, tz=timezone.utc),
+        type="file",
+    )
 
 
 @contextmanager
@@ -2865,6 +2957,92 @@ def memory_import_xml(
         detail=f"imported={len(memory_ids)} replace={replace}",
     )
     return MemoryImportResponse(imported=len(memory_ids), memory_ids=memory_ids)
+
+
+@app.get("/files", response_model=FileListResponse)
+def files_list(
+    bucket: str,
+    user: UserProfile = Depends(_current_user),
+) -> FileListResponse:
+    _ = user
+    config = _get_bucket_config(bucket)
+    base_dir = config["path"]
+    if not os.path.isdir(base_dir):
+        return FileListResponse(entries=[])
+    entries: List[FileEntry] = []
+    for root, _, files in os.walk(base_dir):
+        for filename in files:
+            full_path = os.path.join(root, filename)
+            relative_name = os.path.relpath(full_path, base_dir).replace(os.sep, "/")
+            if not _is_allowed_extension(bucket, relative_name):
+                continue
+            entries.append(_build_file_entry(base_dir, full_path))
+    entries.sort(key=lambda entry: entry.name)
+    return FileListResponse(entries=entries)
+
+
+@app.post("/files/upload", response_model=FileEntry)
+def files_upload(
+    bucket: str = Form(...),
+    file: UploadFile = File(...),
+    user: UserProfile = Depends(_current_user),
+) -> FileEntry:
+    _ = user
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File name is required.")
+    filename = os.path.basename(file.filename)
+    _ensure_allowed_extension(bucket, filename)
+    config = _get_bucket_config(bucket)
+    base_dir = config["path"]
+    os.makedirs(base_dir, exist_ok=True)
+    target_path = os.path.join(base_dir, filename)
+    with open(target_path, "wb") as output_file:
+        shutil.copyfileobj(file.file, output_file)
+    return _build_file_entry(base_dir, target_path)
+
+
+@app.get("/files/download")
+def files_download(
+    bucket: str,
+    path: str,
+    user: UserProfile = Depends(_current_user),
+) -> FileResponse:
+    _ = user
+    _, full_path = _resolve_bucket_path(bucket, path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+    return FileResponse(full_path, filename=os.path.basename(full_path))
+
+
+@app.post("/files/rename", response_model=FileEntry)
+def files_rename(
+    payload: FileRenameRequest,
+    user: UserProfile = Depends(_current_user),
+) -> FileEntry:
+    _ = user
+    base_dir, from_path = _resolve_bucket_path(payload.bucket, payload.from_path)
+    _, to_path = _resolve_bucket_path(payload.bucket, payload.to_path)
+    if not os.path.isfile(from_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+    if os.path.exists(to_path):
+        raise HTTPException(status_code=409, detail="Target file already exists.")
+    os.makedirs(os.path.dirname(to_path), exist_ok=True)
+    os.rename(from_path, to_path)
+    return _build_file_entry(base_dir, to_path)
+
+
+@app.delete("/files")
+def files_delete(
+    bucket: str,
+    path: str,
+    user: UserProfile = Depends(_current_user),
+) -> Dict[str, str]:
+    _ = user
+    _, full_path = _resolve_bucket_path(bucket, path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+    os.remove(full_path)
+    return {"status": "deleted", "path": _normalize_request_path(path)}
 
 
 @app.get("/apps/registry", response_model=List[AppRegistryItem])
