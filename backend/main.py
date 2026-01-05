@@ -88,6 +88,10 @@ FILE_BUCKETS = {
         "path": os.path.join(FILE_STORAGE_ROOT, "backgrounds"),
         "extensions": {".png", ".jpg", ".jpeg", ".gif", ".webp"},
     },
+    "notes": {
+        "path": os.path.join(FILE_STORAGE_ROOT, "notes"),
+        "extensions": {".txt", ".md"},
+    },
 }
 
 logging.basicConfig(
@@ -262,6 +266,17 @@ class FileRenameRequest(BaseModel):
 
     class Config:
         allow_population_by_field_name = True
+
+
+class TextFileRequest(BaseModel):
+    bucket: str
+    path: str
+    content: str
+
+
+class TextFileResponse(BaseModel):
+    entry: FileEntry
+    content: str
 
 
 class UserProfile(BaseModel):
@@ -678,6 +693,15 @@ def _ensure_allowed_extension(bucket: str, filename: str) -> None:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid file extension for {bucket}.",
+        )
+
+
+def _ensure_text_extension(filename: str) -> None:
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in {".txt", ".md"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Only .txt and .md files are supported for text editing.",
         )
 
 
@@ -3043,6 +3067,36 @@ def files_delete(
         raise HTTPException(status_code=404, detail="File not found.")
     os.remove(full_path)
     return {"status": "deleted", "path": _normalize_request_path(path)}
+
+
+@app.get("/files/text", response_model=TextFileResponse)
+def files_text_get(
+    bucket: str,
+    path: str,
+    user: UserProfile = Depends(_current_user),
+) -> TextFileResponse:
+    _ = user
+    _ensure_text_extension(path)
+    base_dir, full_path = _resolve_bucket_path(bucket, path)
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+    with open(full_path, "r", encoding="utf-8") as text_file:
+        content = text_file.read()
+    return TextFileResponse(entry=_build_file_entry(base_dir, full_path), content=content)
+
+
+@app.post("/files/text", response_model=FileEntry)
+def files_text_post(
+    payload: TextFileRequest,
+    user: UserProfile = Depends(_current_user),
+) -> FileEntry:
+    _ = user
+    _ensure_text_extension(payload.path)
+    base_dir, full_path = _resolve_bucket_path(payload.bucket, payload.path)
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    with open(full_path, "w", encoding="utf-8") as text_file:
+        text_file.write(payload.content)
+    return _build_file_entry(base_dir, full_path)
 
 
 @app.get("/apps/registry", response_model=List[AppRegistryItem])
