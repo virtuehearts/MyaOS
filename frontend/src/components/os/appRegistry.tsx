@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Archive, MessageCircle, Settings, Terminal } from 'lucide-react';
 
 import { ChatWindow } from '@/components/os/ChatWindow';
 import { ConsoleWindow } from '@/components/os/ConsoleWindow';
@@ -19,6 +20,7 @@ export interface AppRegistryEntry {
   description: string;
   route: string;
   accent: string;
+  icon: ReactNode;
   startMenuSection?: 'primary' | 'secondary';
   pinned?: boolean;
   desktop?: boolean;
@@ -33,6 +35,7 @@ export const appRegistry: AppRegistryEntry[] = [
     description: 'Companion messaging',
     route: '/apps/chat',
     accent: 'bg-retro-title-active',
+    icon: <MessageCircle className="h-4 w-4" />,
     startMenuSection: 'primary',
     pinned: true,
     desktop: true,
@@ -45,6 +48,7 @@ export const appRegistry: AppRegistryEntry[] = [
     description: 'Recall snippets',
     route: '/apps/memory',
     accent: 'bg-retro-accent',
+    icon: <Archive className="h-4 w-4" />,
     startMenuSection: 'primary',
     pinned: true,
     desktop: true,
@@ -57,6 +61,7 @@ export const appRegistry: AppRegistryEntry[] = [
     description: 'Tweak the OS',
     route: '/apps/settings',
     accent: 'bg-retro-border',
+    icon: <Settings className="h-4 w-4" />,
     startMenuSection: 'primary',
     pinned: true,
     desktop: true,
@@ -75,6 +80,7 @@ export const appRegistry: AppRegistryEntry[] = [
     description: 'System diagnostics',
     route: '/apps/console',
     accent: 'bg-retro-title-active',
+    icon: <Terminal className="h-4 w-4" />,
     startMenuSection: 'primary',
     pinned: false,
     desktop: true,
