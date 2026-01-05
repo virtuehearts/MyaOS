@@ -48,7 +48,7 @@ export function ChatWindow() {
     addMessage,
     clearMessages
   } = useChatStore();
-  const { emotion } = useEmotionStore();
+  const { emotion, setEmotion } = useEmotionStore();
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -89,7 +89,9 @@ export function ChatWindow() {
     if (systemMemory) {
       sections.push(`Memory context:\n${systemMemory}`);
     }
-    sections.push(`Current emotional tone: ${emotion}`);
+    if (emotion.trim()) {
+      sections.push(`Current emotional tone: ${emotion}`);
+    }
     sections.push(
       [
         'Include control data for emotional-state processing in a <control>...</control> block at the end of your reply.',
@@ -109,6 +111,21 @@ export function ChatWindow() {
     try {
       const response = await createOpenRouterChatCompletion(request);
       const { cleaned, control } = stripControlBlock(response);
+      if (control) {
+        try {
+          const payload = JSON.parse(control) as Record<string, unknown>;
+          const label =
+            (payload.emotion as { label?: string } | undefined)?.label ??
+            (payload.emotion_state as { label?: string } | undefined)?.label ??
+            (payload as { emotional_tone?: string }).emotional_tone ??
+            (payload as { label?: string }).label;
+          if (typeof label === 'string' && label.trim()) {
+            setEmotion(label.trim());
+          }
+        } catch {
+          // ignore control parsing failures
+        }
+      }
 
       addMessage({
         id: makeId(),

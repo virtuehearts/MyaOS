@@ -44,6 +44,7 @@ interface ChatStore {
   markChatClosed: () => void;
   addMessage: (message: ChatMessage) => void;
   clearMessages: () => void;
+  setMemory: (entries: MemoryEntry[]) => void;
   addMemory: (entry: MemoryEntry) => void;
   removeMemory: (id: string) => void;
   clearMemory: () => void;
@@ -188,8 +189,14 @@ export const useChatStore = create<ChatStore>()(
               : session
           )
         })),
+      setMemory: (entries) => set({ memory: entries }),
       addMemory: (entry) =>
-        set((state) => ({ memory: [entry, ...state.memory] })),
+        set((state) => {
+          if (state.memory.some((item) => item.id === entry.id)) {
+            return { memory: state.memory };
+          }
+          return { memory: [entry, ...state.memory] };
+        }),
       removeMemory: (id) =>
         set((state) => ({ memory: state.memory.filter((item) => item.id !== id) })),
       clearMemory: () => set({ memory: [] }),
