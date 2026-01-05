@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useApiKeyStore } from '@/store/apiKeyStore';
 import { useChatStore } from '@/store/chatStore';
+import { useUiStore } from '@/store/uiStore';
 
 interface SettingsWindowProps {
   desktopBackground?: string | null;
@@ -32,6 +33,7 @@ export function SettingsWindow({
     setPersona,
     setUsePersona
   } = useChatStore();
+  const { showSystemInsights, setShowSystemInsights } = useUiStore();
   const [localApiKey, setLocalApiKey] = useState(apiKey);
   const [localModel, setLocalModel] = useState(model);
   const [localTemperature, setLocalTemperature] = useState(temperature.toString());
@@ -99,6 +101,20 @@ export function SettingsWindow({
         </div>
         <p className="text-[11px] text-retro-accent">
           Saved locally and never sent anywhere except OpenRouter.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3 border border-retro-border bg-retro-title-active p-3">
+        <label className="flex items-center gap-2 text-xs text-retro-accent">
+          <input
+            type="checkbox"
+            checked={showSystemInsights}
+            onChange={(event) => setShowSystemInsights(event.target.checked)}
+          />
+          Enable System Insights panel
+        </label>
+        <p className="text-[11px] text-retro-accent">
+          Toggle an optional insights panel without replacing existing settings.
         </p>
       </div>
 
@@ -229,6 +245,26 @@ export function SettingsWindow({
           }}
         />
       </div>
+
+      {showSystemInsights ? (
+        <div className="flex flex-col gap-3 border border-retro-border bg-retro-title-active p-3">
+          <div className="text-xs font-semibold">System Insights</div>
+          <div className="grid gap-2 text-xs text-retro-text/80">
+            <div className="flex items-center justify-between">
+              <span>Session:</span>
+              <span>Operator online</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>Display:</span>
+              <span>Retro UI · Stable</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span>Storage:</span>
+              <span>Local browser cache</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
