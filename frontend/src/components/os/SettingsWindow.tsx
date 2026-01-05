@@ -23,10 +23,12 @@ export function SettingsWindow({
   const {
     model,
     temperature,
+    useMemory,
     persona,
     usePersona,
     setModel,
     setTemperature,
+    setUseMemory,
     setPersona,
     setUsePersona
   } = useChatStore();
@@ -35,6 +37,7 @@ export function SettingsWindow({
   const [localTemperature, setLocalTemperature] = useState(temperature.toString());
   const [localPersona, setLocalPersona] = useState(persona);
   const [localUsePersona, setLocalUsePersona] = useState(usePersona);
+  const [localUseMemory, setLocalUseMemory] = useState(useMemory);
 
   useEffect(() => {
     setLocalApiKey(apiKey);
@@ -55,6 +58,10 @@ export function SettingsWindow({
   useEffect(() => {
     setLocalUsePersona(usePersona);
   }, [usePersona]);
+
+  useEffect(() => {
+    setLocalUseMemory(useMemory);
+  }, [useMemory]);
 
   return (
     <div className="flex h-full flex-col gap-4 text-sm text-retro-text">
@@ -147,6 +154,39 @@ export function SettingsWindow({
         </label>
         <p className="text-[11px] text-retro-accent">
           Enable this to prepend the persona to each chat request.
+        </p>
+      </div>
+
+      <div>
+        <h2 className="text-base font-semibold">Privacy &amp; Memory</h2>
+        <p className="text-xs text-retro-accent">
+          Memory is stored locally in browser storage. LLM requests go to OpenRouter
+          using the API key you provide.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3 border border-retro-border bg-retro-title-active p-3">
+        <label className="flex items-center gap-2 text-xs text-retro-accent">
+          <input
+            type="checkbox"
+            checked={localUseMemory}
+            onChange={(event) => {
+              const nextValue = event.target.checked;
+              setLocalUseMemory(nextValue);
+              setUseMemory(nextValue);
+            }}
+          />
+          Send memory with chat requests
+        </label>
+        <p className="text-[11px] text-retro-accent">
+          Turn this off to keep saved memory out of prompts sent to the LLM.
+        </p>
+        <label className="flex items-center gap-2 text-xs text-retro-accent opacity-60">
+          <input type="checkbox" disabled />
+          Local LLM mode (coming soon)
+        </label>
+        <p className="text-[11px] text-retro-accent">
+          This toggle will be enabled once the local model backend is available.
         </p>
       </div>
 
