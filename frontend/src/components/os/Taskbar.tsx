@@ -2,6 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import { appRegistry } from '@/components/os/appRegistry';
+import { TaskbarMusicPlayer } from '@/components/os/TaskbarMusicPlayer';
 import { cn } from '@/lib/utils';
 import { useOsStore, type WindowId } from '@/store/osStore';
 import type { Ref } from 'react';
@@ -65,6 +66,7 @@ export function Taskbar({
           ))}
         </div>
         <div className="flex items-center gap-3 text-xs">
+          <TaskbarMusicPlayer />
           <span className="border border-retro-border bg-retro-bg px-2 py-1">{clockLabel}</span>
         </div>
       </div>
