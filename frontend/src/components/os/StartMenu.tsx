@@ -42,7 +42,7 @@ type StartMenuApp = {
 
 export function StartMenu({ isOpen, onClose, anchorRef }: StartMenuProps) {
   const { user, token, clearSession } = useAuthStore();
-  const { openWindow, focusWindow } = useOsStore();
+  const { openWindow } = useOsStore();
   const [anchorStyle, setAnchorStyle] = useState<CSSProperties | null>(null);
 
   const menuApps = useMemo(() => {
@@ -112,7 +112,6 @@ export function StartMenu({ isOpen, onClose, anchorRef }: StartMenuProps) {
       return;
     }
     openWindow(app.windowId);
-    focusWindow(app.windowId);
     onClose();
   };
 

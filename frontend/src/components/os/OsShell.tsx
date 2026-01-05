@@ -65,7 +65,6 @@ export function OsShell() {
 
   const handleDesktopLaunch = (id: WindowId) => {
     openWindow(id);
-    focusWindow(id);
   };
 
   const handleCloseWindow = (id: WindowId) => {

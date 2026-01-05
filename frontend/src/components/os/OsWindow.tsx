@@ -104,6 +104,7 @@ export function OsWindow({
           'flex h-full w-full flex-col overflow-hidden border border-retro-border',
           isActive ? 'bg-retro-surface' : 'bg-retro-surface/90'
         )}
+        onMouseDown={onFocus}
       >
         <TitleBar
           title={title}
