@@ -67,6 +67,7 @@ export function OsWindow({
       resizeGrid={[8, 8]}
       style={{ zIndex, display: isMinimized ? 'none' : 'block' }}
       className="mya-panel border"
+      dragHandleClassName="os-titlebar-drag"
       aria-label={`${id}-window`}
       resizeHandleComponent={{
         topLeft: (
