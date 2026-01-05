@@ -2503,6 +2503,51 @@ def health() -> Dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/proxy")
+async def proxy_url(url: str) -> Response:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Only http and https URLs are supported.")
+
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        upstream = await client.get(url)
+
+    content_type = upstream.headers.get("content-type", "")
+    media_type = content_type.split(";")[0] if content_type else None
+    content = upstream.content
+
+    if media_type == "text/html":
+        base_tag = f'<base href="{url}">'
+        text = upstream.text
+        if re.search(r"<head[^>]*>", text, re.IGNORECASE):
+            text = re.sub(r"(<head[^>]*>)", rf"\\1{base_tag}", text, count=1, flags=re.IGNORECASE)
+        else:
+            text = f"{base_tag}{text}"
+        content = text.encode(upstream.encoding or "utf-8")
+
+    filtered_headers = {}
+    for key, value in upstream.headers.items():
+        key_lower = key.lower()
+        if key_lower in {
+            "content-length",
+            "content-encoding",
+            "transfer-encoding",
+            "connection",
+            "content-security-policy",
+            "content-security-policy-report-only",
+            "x-frame-options",
+        }:
+            continue
+        filtered_headers[key] = value
+
+    return Response(
+        content=content,
+        status_code=upstream.status_code,
+        headers=filtered_headers,
+        media_type=media_type,
+    )
+
+
 @app.post("/auth/register", response_model=AuthResponse)
 def auth_register(
     payload: AuthRegisterRequest,
