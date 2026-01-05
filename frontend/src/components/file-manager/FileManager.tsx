@@ -42,6 +42,7 @@ type FileEntry = {
   name: string;
   size: number;
   modified: string;
+  type: 'file' | 'directory';
 };
 
 const textExtensions = ['.txt', '.md'];
@@ -87,6 +88,7 @@ export function FileManager() {
   const { token } = useAuthStore();
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [currentPath, setCurrentPath] = useState('');
   const [contextMenu, setContextMenu] = useState<{
     isOpen: boolean;
     position: { x: number; y: number };
@@ -107,15 +109,16 @@ export function FileManager() {
     [activeSection]
   );
 
-  const loadFiles = async (bucket = activeSection) => {
+  const loadFiles = async (bucket = activeSection, path = currentPath) => {
     if (!token) {
       setEntries([]);
       return;
     }
     setIsLoading(true);
     try {
+      const pathParam = path ? `&path=${encodeURIComponent(path)}` : '';
       const response = await apiRequest<{ entries: FileEntry[] }>(
-        `/files?bucket=${bucket}`,
+        `/files?bucket=${bucket}${pathParam}`,
         {
           headers: { Authorization: `Bearer ${token}` }
         }
@@ -130,8 +133,12 @@ export function FileManager() {
   };
 
   useEffect(() => {
-    loadFiles(activeSection);
-  }, [activeSection, token]);
+    setCurrentPath('');
+  }, [activeSection]);
+
+  useEffect(() => {
+    loadFiles(activeSection, currentPath);
+  }, [activeSection, token, currentPath]);
 
   const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -141,6 +148,9 @@ export function FileManager() {
     setUploadError(null);
     const formData = new FormData();
     formData.append('bucket', activeSection);
+    if (currentPath) {
+      formData.append('path', currentPath);
+    }
     formData.append('file', file);
     try {
       const response = await fetch(`${API_BASE_URL}/files/upload`, {
@@ -162,7 +172,20 @@ export function FileManager() {
         }
         throw new Error(detail);
       }
-      await loadFiles(activeSection);
+      const createdEntry = (await response.json()) as FileEntry;
+      setEntries((prev) => {
+        const exists = prev.some((entry) => entry.name === createdEntry.name);
+        if (exists) {
+          return prev;
+        }
+        return [...prev, createdEntry].sort((a, b) => {
+          if (a.type !== b.type) {
+            return a.type === 'directory' ? -1 : 1;
+          }
+          return a.name.localeCompare(b.name);
+        });
+      });
+      await loadFiles(activeSection, currentPath);
     } catch (error) {
       console.error(error);
       setUploadError(
@@ -191,20 +214,21 @@ export function FileManager() {
       return;
     }
     const filename = `${rawName}.${extension}`;
+    const filePath = currentPath ? `${currentPath}/${filename}` : filename;
     try {
       await apiRequest('/files/text', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           bucket: activeSection,
-          path: filename,
+          path: filePath,
           content: ''
         })
       });
-      setEditorPath(filename);
+      setEditorPath(filePath);
       setEditorContent('');
       setEditorOpen(true);
-      await loadFiles(activeSection);
+      await loadFiles(activeSection, currentPath);
     } catch (error) {
       console.error(error);
       window.alert('Unable to create that file.');
@@ -246,7 +270,7 @@ export function FileManager() {
           content: editorContent
         })
       });
-      await loadFiles(activeSection);
+      await loadFiles(activeSection, currentPath);
       setEditorOpen(false);
     } catch (error) {
       console.error(error);
@@ -264,6 +288,8 @@ export function FileManager() {
     if (!confirmed) {
       return;
     }
+    const previousEntries = entries;
+    setEntries((prev) => prev.filter((entry) => entry.name !== file.name));
     try {
       await apiRequest(
         `/files?bucket=${activeSection}&path=${encodeURIComponent(file.name)}`,
@@ -272,10 +298,110 @@ export function FileManager() {
           headers: { Authorization: `Bearer ${token}` }
         }
       );
-      await loadFiles(activeSection);
+      await loadFiles(activeSection, currentPath);
     } catch (error) {
       console.error(error);
+      setEntries(previousEntries);
       window.alert('Unable to delete that file.');
+    }
+  };
+
+  const handleRename = async (file: FileEntry) => {
+    if (!token) {
+      return;
+    }
+    const currentName = file.name.split('/').pop() ?? file.name;
+    const nextName = window
+      .prompt(`Rename ${currentName} to:`, currentName)
+      ?.trim();
+    if (!nextName || nextName === currentName) {
+      return;
+    }
+    const parentPath = file.name.split('/').slice(0, -1).join('/');
+    const nextPath = parentPath ? `${parentPath}/${nextName}` : nextName;
+    const optimisticEntry = { ...file, name: nextPath };
+    const previousEntries = entries;
+    setEntries((prev) =>
+      prev.map((entry) => (entry.name === file.name ? optimisticEntry : entry))
+    );
+    try {
+      await apiRequest('/files/rename', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          bucket: activeSection,
+          from: file.name,
+          to: nextPath
+        })
+      });
+      await loadFiles(activeSection, currentPath);
+    } catch (error) {
+      console.error(error);
+      setEntries(previousEntries);
+      window.alert('Unable to rename that item.');
+    }
+  };
+
+  const handleDownload = async (file: FileEntry) => {
+    if (!token || file.type !== 'file') {
+      return;
+    }
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/files/download?bucket=${activeSection}&path=${encodeURIComponent(
+          file.name
+        )}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) {
+        throw new Error('Download failed.');
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = file.name.split('/').pop() ?? file.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error(error);
+      window.alert('Unable to download that file.');
+    }
+  };
+
+  const handleNewFolder = async () => {
+    if (!token) {
+      return;
+    }
+    const rawName = window.prompt('New folder name:')?.trim();
+    if (!rawName) {
+      return;
+    }
+    const folderPath = currentPath ? `${currentPath}/${rawName}` : rawName;
+    const optimisticEntry: FileEntry = {
+      name: folderPath,
+      size: 0,
+      modified: new Date().toISOString(),
+      type: 'directory'
+    };
+    const previousEntries = entries;
+    setEntries((prev) => [...prev, optimisticEntry]);
+    try {
+      await apiRequest('/files/folder', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          bucket: activeSection,
+          path: folderPath
+        })
+      });
+      await loadFiles(activeSection, currentPath);
+    } catch (error) {
+      console.error(error);
+      setEntries(previousEntries);
+      window.alert('Unable to create that folder.');
     }
   };
 
@@ -288,8 +414,24 @@ export function FileManager() {
     });
   };
 
+  const openActionMenu = (
+    event: MouseEvent<HTMLButtonElement>,
+    target: FileEntry
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setContextMenu({
+      isOpen: true,
+      position: { x: rect.left, y: rect.bottom },
+      target
+    });
+  };
+
   const contextActions: ContextMenuAction[] = useMemo(() => {
     const target = contextMenu.target;
+    const isDirectory = target?.type === 'directory';
+    const isFile = target?.type === 'file';
     return [
       {
         id: 'new-file',
@@ -298,14 +440,43 @@ export function FileManager() {
         disabled: activeSection !== 'notes'
       },
       {
+        id: 'new-folder',
+        label: 'New Folder',
+        onSelect: handleNewFolder
+      },
+      {
         id: 'open',
-        label: 'Open',
+        label: isDirectory ? 'Open Folder' : 'Open',
         onSelect: () => {
           if (target) {
-            handleOpenText(target);
+            if (target.type === 'directory') {
+              setCurrentPath(target.name);
+            } else {
+              handleOpenText(target);
+            }
           }
         },
-        disabled: !target || !isTextFile(target.name)
+        disabled: !target || (isFile && !isTextFile(target.name))
+      },
+      {
+        id: 'download',
+        label: 'Download',
+        onSelect: () => {
+          if (target) {
+            handleDownload(target);
+          }
+        },
+        disabled: !target || target.type !== 'file'
+      },
+      {
+        id: 'rename',
+        label: 'Rename',
+        onSelect: () => {
+          if (target) {
+            handleRename(target);
+          }
+        },
+        disabled: !target
       },
       {
         id: 'delete',
@@ -318,7 +489,32 @@ export function FileManager() {
         disabled: !target
       }
     ];
-  }, [contextMenu.target, activeSection, handleNewFile, handleOpenText, handleDelete]);
+  }, [
+    contextMenu.target,
+    activeSection,
+    handleNewFile,
+    handleNewFolder,
+    handleOpenText,
+    handleRename,
+    handleDelete,
+    handleDownload
+  ]);
+
+  const breadcrumbs = useMemo(() => {
+    if (!currentPath) {
+      return [];
+    }
+    const parts = currentPath.split('/');
+    return parts.map((part, index) => ({
+      name: part,
+      path: parts.slice(0, index + 1).join('/')
+    }));
+  }, [currentPath]);
+
+  const getDisplayName = (entry: FileEntry) => {
+    const parts = entry.name.split('/');
+    return parts[parts.length - 1] ?? entry.name;
+  };
 
   return (
     <div className="flex min-h-full flex-col gap-4 text-sm text-retro-text">
@@ -350,15 +546,45 @@ export function FileManager() {
             <p className="text-[11px] text-retro-accent">
               {activeConfig?.description}
             </p>
+            <div className="mt-2 flex flex-wrap items-center gap-1 text-[11px] text-retro-accent">
+              <button
+                type="button"
+                className="rounded border border-retro-border px-1 py-0.5 text-retro-text"
+                onClick={() => setCurrentPath('')}
+                disabled={!currentPath}
+              >
+                {activeConfig?.label ?? 'Root'}
+              </button>
+              {breadcrumbs.map((crumb) => (
+                <button
+                  key={crumb.path}
+                  type="button"
+                  className="rounded border border-retro-border px-1 py-0.5 text-retro-text"
+                  onClick={() => setCurrentPath(crumb.path)}
+                >
+                  {crumb.name}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="flex flex-1 flex-col items-end gap-2 text-xs">
-            <label className="text-[11px] text-retro-accent">Upload file</label>
+            <label className="text-[11px] text-retro-accent">
+              Upload to {currentPath || 'root'}
+            </label>
             <Input
               type="file"
               accept={activeConfig?.accept}
               className="h-8 max-w-[220px] text-[11px]"
               onChange={handleUpload}
             />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-[10px]"
+              onClick={handleNewFolder}
+            >
+              New Folder
+            </Button>
             {uploadError && (
               <p className="max-w-[220px] text-[11px] text-red-400">
                 {uploadError}
@@ -381,16 +607,30 @@ export function FileManager() {
             <div
               key={file.name}
               className="grid gap-2 border border-retro-border bg-retro-surface p-2 md:grid-cols-[minmax(0,1fr)_90px_150px_170px]"
-              onClick={() => handleOpenText(file)}
+              onClick={() => {
+                if (file.type === 'directory') {
+                  setCurrentPath(file.name);
+                  return;
+                }
+                handleOpenText(file);
+              }}
               onContextMenu={(event) => openContextMenu(event, file)}
             >
               <div>
-                <div className="font-semibold text-retro-text">{file.name}</div>
+                <div className="font-semibold text-retro-text">
+                  {file.type === 'directory' ? '📁 ' : ''}
+                  {getDisplayName(file)}
+                </div>
                 <div className="mt-1 text-[11px] text-retro-accent md:hidden">
-                  {formatBytes(file.size)} · {formatDate(file.modified)}
+                  {file.type === 'directory'
+                    ? 'Folder'
+                    : formatBytes(file.size)}{' '}
+                  · {formatDate(file.modified)}
                 </div>
               </div>
-              <div className="hidden md:block">{formatBytes(file.size)}</div>
+              <div className="hidden md:block">
+                {file.type === 'directory' ? '--' : formatBytes(file.size)}
+              </div>
               <div className="hidden md:block">{formatDate(file.modified)}</div>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -399,30 +639,23 @@ export function FileManager() {
                   className="h-7 px-2 text-[10px]"
                   onClick={(event) => {
                     event.stopPropagation();
+                    if (file.type === 'directory') {
+                      setCurrentPath(file.name);
+                      return;
+                    }
                     handleOpenText(file);
                   }}
-                  disabled={!isTextFile(file.name)}
+                  disabled={file.type === 'file' && !isTextFile(file.name)}
                 >
-                  Open
+                  {file.type === 'directory' ? 'Open' : 'Open'}
                 </Button>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-7 px-2 text-[10px]"
-                  onClick={(event) => event.stopPropagation()}
+                  onClick={(event) => openActionMenu(event, file)}
                 >
-                  Rename
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-[10px]"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleDelete(file);
-                  }}
-                >
-                  Delete
+                  ...
                 </Button>
               </div>
             </div>
