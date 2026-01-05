@@ -1,11 +1,20 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent
+} from 'react';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { deleteTrackBlob, getTrackBlob, putTrackBlob } from '@/lib/musicDb';
 import { useMusicStore } from '@/store/musicStore';
+import { Pause, Play, SkipBack, SkipForward, Volume2 } from 'lucide-react';
 
 const formatTime = (value: number) => {
   if (!Number.isFinite(value)) {
@@ -26,8 +35,6 @@ const getSafeId = () => {
 export function TaskbarMusicPlayer() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
 
   const {
@@ -41,7 +48,6 @@ export function TaskbarMusicPlayer() {
     reorderTracks,
     setCurrentTrack,
     setIsPlaying,
-    setPlaybackMode,
     setVolume,
     updateTrackDuration
   } = useMusicStore();
@@ -60,8 +66,6 @@ export function TaskbarMusicPlayer() {
         audio.removeAttribute('src');
         audio.load();
       }
-      setCurrentTime(0);
-      setDuration(0);
       setIsPlaying(false);
       return;
     }
@@ -109,11 +113,7 @@ export function TaskbarMusicPlayer() {
     if (!audio) {
       return;
     }
-    const handleTimeUpdate = () => {
-      setCurrentTime(audio.currentTime);
-    };
     const handleMetadata = () => {
-      setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
       if (currentTrack && Number.isFinite(audio.duration)) {
         updateTrackDuration(currentTrack.id, audio.duration);
       }
@@ -141,12 +141,10 @@ export function TaskbarMusicPlayer() {
       setCurrentTrack(nextTrack.id);
     };
 
-    audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('loadedmetadata', handleMetadata);
     audio.addEventListener('ended', handleEnded);
 
     return () => {
-      audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('loadedmetadata', handleMetadata);
       audio.removeEventListener('ended', handleEnded);
     };
@@ -197,14 +195,16 @@ export function TaskbarMusicPlayer() {
     setCurrentTrack(orderedTracks[nextIndex]?.id ?? orderedTracks[0]?.id ?? null);
   };
 
-  const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length === 0) {
+  const handleFilesUpload = async (files: File[]) => {
+    const filteredFiles = files.filter(
+      (file) => file.type === 'audio/mpeg' || file.name.toLowerCase().endsWith('.mp3')
+    );
+    if (filteredFiles.length === 0) {
       return;
     }
     const baseOrder = orderedTracks.length;
     await Promise.all(
-      files.map(async (file, index) => {
+      filteredFiles.map(async (file, index) => {
         const id = getSafeId();
         const blobKey = `track-${id}`;
         await putTrackBlob(blobKey, file);
@@ -217,6 +217,14 @@ export function TaskbarMusicPlayer() {
         });
       })
     );
+  };
+
+  const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) {
+      return;
+    }
+    await handleFilesUpload(files);
     event.target.value = '';
   };
 
@@ -237,23 +245,18 @@ export function TaskbarMusicPlayer() {
     reorderTracks(nextOrder.map((track) => track.id));
   };
 
-  const handleProgressChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const nextTime = Number(event.target.value);
-    const audio = audioRef.current;
-    if (audio) {
-      audio.currentTime = nextTime;
-      setCurrentTime(nextTime);
-    }
-  };
-
   const handleVolumeChange = (event: ChangeEvent<HTMLInputElement>) => {
     setVolume(Number(event.target.value));
   };
 
-  const handlePlaybackModeToggle = () => {
-    setPlaybackMode(
-      playbackMode === 'normal' ? 'repeat' : playbackMode === 'repeat' ? 'loop' : 'normal'
-    );
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+  };
+
+  const handleDrop = async (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files ?? []);
+    await handleFilesUpload(files);
   };
 
   return (
@@ -262,11 +265,20 @@ export function TaskbarMusicPlayer() {
       <Button
         variant="ghost"
         size="sm"
+        onClick={() => setIsPanelOpen((open) => !open)}
+        aria-label="Toggle playlist"
+        className="h-8 px-2"
+      >
+        <Volume2 className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={handlePrev}
         aria-label="Previous track"
         className="h-8 px-2"
       >
-        ◀
+        <SkipBack className="h-4 w-4" />
       </Button>
       <Button
         variant="ghost"
@@ -276,7 +288,13 @@ export function TaskbarMusicPlayer() {
         className="h-8 px-3"
         disabled={orderedTracks.length === 0 && !currentTrackId}
       >
-        {isLoading ? '...' : isPlaying ? 'Pause' : 'Play'}
+        {isLoading ? (
+          '...'
+        ) : isPlaying ? (
+          <Pause className="h-4 w-4" />
+        ) : (
+          <Play className="h-4 w-4" />
+        )}
       </Button>
       <Button
         variant="ghost"
@@ -285,57 +303,14 @@ export function TaskbarMusicPlayer() {
         aria-label="Next track"
         className="h-8 px-2"
       >
-        ▶
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={handlePlaybackModeToggle}
-        aria-label="Toggle playback mode"
-        className={cn('h-8 px-2', playbackMode !== 'normal' && 'bg-retro-title-active')}
-        title={`Playback mode: ${playbackMode}`}
-      >
-        {playbackMode === 'repeat' ? 'Repeat' : playbackMode === 'loop' ? 'Loop' : 'Normal'}
-      </Button>
-      <div className="flex w-32 items-center gap-2">
-        <input
-          type="range"
-          min={0}
-          max={duration || 0}
-          step={1}
-          value={Math.min(currentTime, duration || 0)}
-          onChange={handleProgressChange}
-          className="h-1 w-full cursor-pointer accent-retro-accent"
-          aria-label="Playback progress"
-        />
-        <span className="min-w-[56px] text-[10px]">
-          {formatTime(currentTime)} / {formatTime(duration || 0)}
-        </span>
-      </div>
-      <div className="flex items-center gap-1">
-        <span className="text-[10px]">Vol</span>
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={volume}
-          onChange={handleVolumeChange}
-          className="h-1 w-16 cursor-pointer accent-retro-accent"
-          aria-label="Volume"
-        />
-      </div>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => setIsPanelOpen((open) => !open)}
-        aria-label="Open playlist"
-        className="h-8 px-2"
-      >
-        Playlist
+        <SkipForward className="h-4 w-4" />
       </Button>
       {isPanelOpen ? (
-        <div className="absolute bottom-12 right-0 z-50 w-80 space-y-3 rounded border border-retro-border bg-retro-surface p-3 shadow-[0_8px_0_rgba(0,0,0,0.15)]">
+        <div
+          className="absolute bottom-12 right-0 z-50 w-80 space-y-3 rounded border border-retro-border bg-retro-surface p-3 shadow-[0_8px_0_rgba(0,0,0,0.15)]"
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+        >
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-retro-text">Playlist</span>
             <Button
@@ -349,12 +324,28 @@ export function TaskbarMusicPlayer() {
           </div>
           <label className="flex flex-col gap-2 text-[11px]">
             Upload MP3s
+              <input
+                type="file"
+                accept="audio/mpeg"
+                multiple
+                onChange={handleUpload}
+                className="w-full text-[11px]"
+              />
+            </label>
+          <div className="rounded border border-dashed border-retro-border bg-retro-surface/70 p-2 text-[10px] text-retro-text/70">
+            Drag &amp; drop MP3 files here
+          </div>
+          <label className="flex items-center gap-2 text-[11px]">
+            <span>Volume</span>
             <input
-              type="file"
-              accept="audio/mpeg"
-              multiple
-              onChange={handleUpload}
-              className="w-full text-[11px]"
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={volume}
+              onChange={handleVolumeChange}
+              className="h-1 w-full cursor-pointer accent-retro-accent"
+              aria-label="Volume"
             />
           </label>
           <div className="max-h-48 space-y-2 overflow-y-auto pr-1 text-[11px]">
