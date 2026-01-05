@@ -34,6 +34,8 @@ const getSafeId = () => {
 
 export function TaskbarMusicPlayer() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const isPlayingRef = useRef(false);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -59,46 +61,78 @@ export function TaskbarMusicPlayer() {
 
   const currentTrack = orderedTracks.find((track) => track.id === currentTrackId) ?? null;
 
-  const loadCurrentTrack = useCallback(async () => {
-    const audio = audioRef.current;
-    if (!audio || !currentTrack) {
-      if (audio) {
-        audio.removeAttribute('src');
-        audio.load();
-      }
-      setIsPlaying(false);
-      return;
-    }
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
 
-    setIsLoading(true);
-    try {
-      const blob = await getTrackBlob(currentTrack.blobKey);
-      if (!blob) {
-        setIsLoading(false);
-        setIsPlaying(false);
-        return;
-      }
-      const objectUrl = URL.createObjectURL(blob);
-      audio.src = objectUrl;
-      audio.load();
-      setIsLoading(false);
-      if (isPlaying) {
-        void audio.play().catch(() => setIsPlaying(false));
-      }
-      return () => URL.revokeObjectURL(objectUrl);
-    } catch (error) {
-      setIsLoading(false);
-      setIsPlaying(false);
+  const revokeObjectUrl = useCallback(() => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
     }
-    return undefined;
-  }, [currentTrack, isPlaying, setIsPlaying]);
+  }, []);
 
   useEffect(() => {
-    const cleanupPromise = loadCurrentTrack();
-    return () => {
-      void cleanupPromise?.then((cleanup) => cleanup?.());
+    let cancelled = false;
+    const audio = audioRef.current;
+    if (!audio) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const loadTrack = async () => {
+      if (!currentTrack) {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+        revokeObjectUrl();
+        setIsPlaying(false);
+        setIsLoading(false);
+        return;
+      }
+
+      setIsLoading(true);
+      try {
+        const blob = await getTrackBlob(currentTrack.blobKey);
+        if (cancelled) {
+          return;
+        }
+        if (!blob) {
+          setIsLoading(false);
+          setIsPlaying(false);
+          return;
+        }
+        const objectUrl = URL.createObjectURL(blob);
+        revokeObjectUrl();
+        objectUrlRef.current = objectUrl;
+        audio.pause();
+        audio.src = objectUrl;
+        audio.load();
+        setIsLoading(false);
+        if (isPlayingRef.current) {
+          void audio.play().catch(() => setIsPlaying(false));
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setIsLoading(false);
+          setIsPlaying(false);
+        }
+      }
     };
-  }, [loadCurrentTrack]);
+
+    void loadTrack();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack, revokeObjectUrl, setIsPlaying]);
+
+  useEffect(() => {
+    return () => {
+      revokeObjectUrl();
+    };
+  }, [revokeObjectUrl]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -163,7 +197,12 @@ export function TaskbarMusicPlayer() {
       return;
     }
     if (isPlaying) {
-      void audio.play().catch(() => setIsPlaying(false));
+      if (!audio.src) {
+        return;
+      }
+      if (audio.paused) {
+        void audio.play().catch(() => setIsPlaying(false));
+      }
     } else {
       audio.pause();
     }
