@@ -77,6 +77,11 @@ export function OsShell() {
   const windowContext = {
     desktopBackground,
     onBackgroundSelect: (file: File) => {
+      const allowedTypes = ['image/jpeg', 'image/png'];
+      if (!allowedTypes.includes(file.type)) {
+        window.alert('Please choose a JPG/JPEG or PNG image.');
+        return;
+      }
       const url = URL.createObjectURL(file);
       setDesktopBackground((prev) => {
         if (prev) {
