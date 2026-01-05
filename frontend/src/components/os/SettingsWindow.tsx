@@ -20,10 +20,21 @@ export function SettingsWindow({
 }: SettingsWindowProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const { apiKey, setApiKey, clearApiKey } = useApiKeyStore();
-  const { model, temperature, setModel, setTemperature } = useChatStore();
+  const {
+    model,
+    temperature,
+    persona,
+    usePersona,
+    setModel,
+    setTemperature,
+    setPersona,
+    setUsePersona
+  } = useChatStore();
   const [localApiKey, setLocalApiKey] = useState(apiKey);
   const [localModel, setLocalModel] = useState(model);
   const [localTemperature, setLocalTemperature] = useState(temperature.toString());
+  const [localPersona, setLocalPersona] = useState(persona);
+  const [localUsePersona, setLocalUsePersona] = useState(usePersona);
 
   useEffect(() => {
     setLocalApiKey(apiKey);
@@ -36,6 +47,14 @@ export function SettingsWindow({
   useEffect(() => {
     setLocalTemperature(temperature.toString());
   }, [temperature]);
+
+  useEffect(() => {
+    setLocalPersona(persona);
+  }, [persona]);
+
+  useEffect(() => {
+    setLocalUsePersona(usePersona);
+  }, [usePersona]);
 
   return (
     <div className="flex h-full flex-col gap-4 text-sm text-retro-text">
@@ -103,6 +122,31 @@ export function SettingsWindow({
         />
         <p className="text-[11px] text-retro-accent">
           Lower values are more focused; higher values are more creative.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-3 border border-retro-border bg-retro-title-active p-3">
+        <label className="text-xs font-semibold">Persona / Character</label>
+        <Input
+          placeholder="Describe Mya's persona or role..."
+          value={localPersona}
+          onChange={(event) => setLocalPersona(event.target.value)}
+          onBlur={() => setPersona(localPersona.trim())}
+        />
+        <label className="flex items-center gap-2 text-xs text-retro-accent">
+          <input
+            type="checkbox"
+            checked={localUsePersona}
+            onChange={(event) => {
+              const nextValue = event.target.checked;
+              setLocalUsePersona(nextValue);
+              setUsePersona(nextValue);
+            }}
+          />
+          Include persona in system prompt
+        </label>
+        <p className="text-[11px] text-retro-accent">
+          Enable this to prepend the persona to each chat request.
         </p>
       </div>
 
