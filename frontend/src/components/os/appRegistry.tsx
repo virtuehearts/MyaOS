@@ -1,8 +1,16 @@
 import type { ReactNode } from 'react';
-import { Archive, MessageCircle, MessagesSquare, Settings, Terminal } from 'lucide-react';
+import {
+  Archive,
+  Folder,
+  MessageCircle,
+  MessagesSquare,
+  Settings,
+  Terminal
+} from 'lucide-react';
 
 import { ChatWindow } from '@/components/os/ChatWindow';
 import { ConsoleWindow } from '@/components/os/ConsoleWindow';
+import { FileManagerWindow } from '@/components/os/FileManagerWindow';
 import { MyChatsWindow } from '@/components/os/MyChatsWindow';
 import { MemoryWindow } from '@/components/os/MemoryWindow';
 import { SettingsWindow } from '@/components/os/SettingsWindow';
@@ -99,6 +107,19 @@ export const appRegistry: AppRegistryEntry[] = [
     pinned: false,
     desktop: true,
     render: () => <MyChatsWindow />
+  },
+  {
+    id: 'file-manager',
+    label: 'File Manager',
+    title: 'File Manager',
+    description: 'Browse system assets',
+    route: '/apps/file-manager',
+    accent: 'bg-retro-border',
+    icon: <Folder className="h-4 w-4" />,
+    startMenuSection: 'primary',
+    pinned: false,
+    desktop: true,
+    render: () => <FileManagerWindow />
   }
 ];
 
