@@ -100,6 +100,7 @@ export function FileManager() {
   const [editorContent, setEditorContent] = useState('');
   const [editorPath, setEditorPath] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const activeConfig = useMemo(
     () => sections.find((section) => section.id === activeSection),
@@ -137,6 +138,7 @@ export function FileManager() {
     if (!file || !token) {
       return;
     }
+    setUploadError(null);
     const formData = new FormData();
     formData.append('bucket', activeSection);
     formData.append('file', file);
@@ -147,13 +149,25 @@ export function FileManager() {
         body: formData
       });
       if (!response.ok) {
-        const payload = await response.json();
-        throw new Error(payload.detail ?? 'Upload failed.');
+        let detail = 'Upload failed.';
+        try {
+          const payload = await response.json();
+          detail = payload.detail ?? detail;
+        } catch (parseError) {
+          const fallback = await response.text();
+          if (fallback) {
+            detail = fallback;
+          }
+          console.error(parseError);
+        }
+        throw new Error(detail);
       }
       await loadFiles(activeSection);
     } catch (error) {
       console.error(error);
-      window.alert('Unable to upload that file.');
+      setUploadError(
+        error instanceof Error ? error.message : 'Unable to upload that file.'
+      );
     } finally {
       event.target.value = '';
     }
@@ -345,6 +359,11 @@ export function FileManager() {
               className="h-8 max-w-[220px] text-[11px]"
               onChange={handleUpload}
             />
+            {uploadError && (
+              <p className="max-w-[220px] text-[11px] text-red-400">
+                {uploadError}
+              </p>
+            )}
           </div>
         </div>
 
