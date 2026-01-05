@@ -7,6 +7,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { useAutoScrollToBottom } from '@/components/os/useAutoScrollToBottom';
 import type { OpenRouterChatOptions } from '@/lib/openrouter';
 import { createOpenRouterChatCompletion } from '@/lib/openrouter';
 import { useApiKeyStore } from '@/store/apiKeyStore';
@@ -70,9 +71,7 @@ export function ChatWindow() {
 
   const messages = activeSession?.messages ?? [];
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, status]);
+  useAutoScrollToBottom(bottomRef, [messages, status]);
 
   const systemMemory = useMemo(() => {
     if (!useMemory || memory.length === 0) {

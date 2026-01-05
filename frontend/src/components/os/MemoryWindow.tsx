@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
+import { useAutoScrollToBottom } from '@/components/os/useAutoScrollToBottom';
 import { useChatStore } from '@/store/chatStore';
 
 const makeId = () =>
@@ -12,6 +13,9 @@ export function MemoryWindow() {
   const { memory, useMemory, setUseMemory, addMemory, removeMemory, clearMemory } =
     useChatStore();
   const [draft, setDraft] = useState('');
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useAutoScrollToBottom(bottomRef, [memory.length]);
 
   const handleAdd = () => {
     const trimmed = draft.trim();
@@ -94,6 +98,7 @@ export function MemoryWindow() {
                 </Button>
               </div>
             ))}
+            <div ref={bottomRef} />
           </div>
         )}
       </div>

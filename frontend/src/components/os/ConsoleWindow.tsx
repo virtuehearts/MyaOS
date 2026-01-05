@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { useAutoScrollToBottom } from '@/components/os/useAutoScrollToBottom';
 import { useChatStore } from '@/store/chatStore';
 import { useEmotionStore } from '@/store/emotionStore';
 
@@ -35,9 +36,7 @@ export function ConsoleWindow() {
   const [entries, setEntries] = useState<ConsoleEntry[]>(initialEntries);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [entries]);
+  useAutoScrollToBottom(bottomRef, [entries]);
 
   const availableDirectories = useMemo(
     () => ({
