@@ -21,6 +21,34 @@ export function TitleBar({
   variant = 'windows'
 }: TitleBarProps) {
   const buttonLabelClass = 'h-6 w-6 px-0 text-xs font-bold leading-none border border-retro-border';
+  const controls = (
+    <>
+      <Button
+        variant="ghost"
+        size="sm"
+        className={cn(buttonLabelClass)}
+        onClick={onMinimize}
+      >
+        _
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className={cn(buttonLabelClass)}
+        onClick={onMaximize}
+      >
+        □
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className={cn(buttonLabelClass)}
+        onClick={onClose}
+      >
+        X
+      </Button>
+    </>
+  );
 
   return (
     <div
@@ -29,65 +57,18 @@ export function TitleBar({
         isActive ? 'bg-retro-title-active' : 'bg-retro-surface'
       )}
     >
-      <div className="flex items-center gap-2">
-        {variant === 'mac' ? (
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn(buttonLabelClass)}
-              onClick={onMinimize}
-            >
-              _
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn(buttonLabelClass)}
-              onClick={onMaximize}
-            >
-              □
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn(buttonLabelClass)}
-              onClick={onClose}
-            >
-              X
-            </Button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn(buttonLabelClass)}
-              onClick={onMinimize}
-            >
-              _
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn(buttonLabelClass)}
-              onClick={onMaximize}
-            >
-              □
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className={cn(buttonLabelClass)}
-              onClick={onClose}
-            >
-              X
-            </Button>
-          </div>
-        )}
-      </div>
-      <span className="text-retro-text">{title}</span>
-      <div className="h-6 w-20" />
+      {variant === 'windows' ? (
+        <>
+          <span className="text-retro-text">{title}</span>
+          <div className="flex items-center gap-1">{controls}</div>
+        </>
+      ) : (
+        <>
+          <div className="flex items-center gap-1">{controls}</div>
+          <span className="text-retro-text">{title}</span>
+          <div className="h-6 w-20" />
+        </>
+      )}
     </div>
   );
 }
