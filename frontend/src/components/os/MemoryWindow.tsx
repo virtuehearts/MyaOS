@@ -1,29 +1,180 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { useAutoScrollToBottom } from '@/components/os/useAutoScrollToBottom';
+import { apiRequest } from '@/lib/api';
+import { useAuthStore } from '@/store/authStore';
 import { useChatStore } from '@/store/chatStore';
 
-const makeId = () =>
-  typeof crypto !== 'undefined' ? crypto.randomUUID() : `${Date.now()}`;
+type MemoryMetadata = {
+  memory_id: string;
+  created_at: string;
+  tags: string[];
+  source_tags: string[];
+  virtue_markers: Record<string, number>;
+  salience: number;
+  updated_at?: string | null;
+};
+
+type MemoryRecord = {
+  metadata: MemoryMetadata;
+  content: string;
+};
+
+type MemoryListResponse = {
+  memories: MemoryRecord[];
+};
+
+type MemoryCreateResponse = MemoryRecord;
+
+type MemoryDeleteResponse = {
+  status: string;
+  memory_id: string;
+};
+
+const toUiEntry = (record: MemoryRecord) => ({
+  id: record.metadata.memory_id,
+  content: record.content,
+  createdAt: new Date(record.metadata.created_at).getTime()
+});
 
 export function MemoryWindow() {
-  const { memory, useMemory, setUseMemory, addMemory, removeMemory, clearMemory } =
-    useChatStore();
+  const {
+    memory,
+    useMemory,
+    setUseMemory,
+    setMemory,
+    addMemory,
+    removeMemory,
+    clearMemory
+  } = useChatStore();
+  const { token, user } = useAuthStore();
   const [draft, setDraft] = useState('');
+  const [status, setStatus] = useState<'idle' | 'loading' | 'saving' | 'error'>(
+    'idle'
+  );
+  const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useAutoScrollToBottom(bottomRef, [memory.length]);
 
-  const handleAdd = () => {
+  const hasSession = Boolean(token && user);
+
+  useEffect(() => {
+    if (!hasSession) {
+      setError(null);
+      return;
+    }
+
+    let isMounted = true;
+    const fetchMemories = async () => {
+      setStatus('loading');
+      setError(null);
+      try {
+        const response = await apiRequest<MemoryListResponse>('/memory', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!isMounted) {
+          return;
+        }
+        setMemory(response.memories.map(toUiEntry));
+        setStatus('idle');
+      } catch (err) {
+        if (!isMounted) {
+          return;
+        }
+        setStatus('error');
+        setError(err instanceof Error ? err.message : 'Failed to load memories.');
+      }
+    };
+
+    fetchMemories();
+    return () => {
+      isMounted = false;
+    };
+  }, [hasSession, setMemory, token]);
+
+  const handleAdd = async () => {
     const trimmed = draft.trim();
     if (!trimmed) {
       return;
     }
-    addMemory({ id: makeId(), content: trimmed, createdAt: Date.now() });
-    setDraft('');
+    if (!hasSession) {
+      setError('Sign in to store memories in the vault.');
+      return;
+    }
+
+    setStatus('saving');
+    setError(null);
+    try {
+      const record = await apiRequest<MemoryCreateResponse>('/memory', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          content: trimmed,
+          tags: ['manual'],
+          source_tags: ['vault'],
+          virtue_markers: {},
+          salience: 0.65
+        })
+      });
+      addMemory(toUiEntry(record));
+      setDraft('');
+      setStatus('idle');
+    } catch (err) {
+      setStatus('error');
+      setError(err instanceof Error ? err.message : 'Failed to save memory.');
+    }
+  };
+
+  const handleRemove = async (memoryId: string) => {
+    if (!hasSession) {
+      setError('Sign in to manage stored memories.');
+      return;
+    }
+
+    setStatus('saving');
+    setError(null);
+    try {
+      await apiRequest<MemoryDeleteResponse>(`/memory/${memoryId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      removeMemory(memoryId);
+      setStatus('idle');
+    } catch (err) {
+      setStatus('error');
+      setError(err instanceof Error ? err.message : 'Failed to remove memory.');
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (!hasSession) {
+      setError('Sign in to manage stored memories.');
+      return;
+    }
+
+    setStatus('saving');
+    setError(null);
+    try {
+      await apiRequest('/memory/import/json?replace=true', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          memories: [],
+          emotion_state: null,
+          emotion_baseline: null,
+          emotion_transitions: []
+        })
+      });
+      clearMemory();
+      setStatus('idle');
+    } catch (err) {
+      setStatus('error');
+      setError(err instanceof Error ? err.message : 'Failed to clear memories.');
+    }
   };
 
   return (
@@ -33,6 +184,16 @@ export function MemoryWindow() {
         <p className="text-xs text-retro-accent">
           Store key facts or reminders that Mya can reference later.
         </p>
+        {!hasSession && (
+          <p className="mt-2 text-xs text-amber-200">
+            Sign in to sync memories with the vault. Local-only memories do not persist
+            across sessions.
+          </p>
+        )}
+        {status === 'loading' && (
+          <p className="mt-2 text-xs text-retro-accent">Loading memories…</p>
+        )}
+        {error && <p className="mt-2 text-xs text-red-200">{error}</p>}
       </div>
 
       <label className="flex items-center gap-2 text-xs text-retro-accent">
@@ -58,10 +219,16 @@ export function MemoryWindow() {
             size="sm"
             onClick={() => setDraft('')}
             className="text-xs"
+            disabled={status === 'saving'}
           >
             Clear
           </Button>
-          <Button size="sm" onClick={handleAdd} className="text-xs">
+          <Button
+            size="sm"
+            onClick={handleAdd}
+            className="text-xs"
+            disabled={status === 'saving'}
+          >
             Save Memory
           </Button>
         </div>
@@ -71,7 +238,13 @@ export function MemoryWindow() {
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold">Stored memories</span>
           {memory.length > 0 && (
-            <Button variant="ghost" size="sm" onClick={clearMemory} className="text-xs">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleClearAll}
+              className="text-xs"
+              disabled={status === 'saving'}
+            >
               Clear All
             </Button>
           )}
@@ -91,8 +264,9 @@ export function MemoryWindow() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => removeMemory(item.id)}
+                  onClick={() => handleRemove(item.id)}
                   className="h-6 px-2 text-[10px]"
+                  disabled={status === 'saving'}
                 >
                   Remove
                 </Button>
