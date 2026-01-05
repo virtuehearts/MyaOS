@@ -5,7 +5,6 @@ import JSZip from 'jszip';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { useChatStore } from '@/store/chatStore';
 import { useOsStore } from '@/store/osStore';
@@ -83,7 +82,7 @@ export function MyChatsWindow() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-4 text-sm text-retro-text">
+    <div className="flex min-h-full flex-col gap-4 text-sm text-retro-text">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-base font-semibold">My Chats</h2>
@@ -116,113 +115,111 @@ export function MyChatsWindow() {
 
       <div className="flex flex-1 flex-col gap-2 border border-retro-border bg-retro-title-active p-3">
         <div className="text-xs font-semibold">Chat sessions</div>
-        <ScrollArea className="flex-1 pr-2">
-          {orderedSessions.length === 0 ? (
-            <div className="text-xs text-retro-accent">
-              No sessions yet. Start a chat to create your first session.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {orderedSessions.map((session) => {
-                const isEditing = editingId === session.id;
-                const isActive = session.id === activeSessionId;
-                return (
-                  <div
-                    key={session.id}
-                    className={cn(
-                      'flex flex-col gap-2 border border-retro-border bg-retro-surface p-2 text-xs',
-                      isActive && 'ring-1 ring-retro-accent'
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="space-y-1">
-                        {isEditing ? (
-                          <div className="flex gap-2">
-                            <Input
-                              value={nameDraft}
-                              onChange={(event) => setNameDraft(event.target.value)}
-                              className="h-7 text-xs"
-                            />
-                            <Button
-                              size="sm"
-                              className="h-7 px-2 text-[11px]"
-                              onClick={() => handleRenameSave(session.id)}
-                            >
-                              Save
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 px-2 text-[11px]"
-                              onClick={() => {
-                                setEditingId(null);
-                                setNameDraft('');
-                              }}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-retro-text">
-                              {session.name}
-                            </span>
-                            {session.archived && (
-                              <span className="rounded border border-retro-border px-1 text-[10px] uppercase text-retro-accent">
-                                Archived
-                              </span>
-                            )}
-                          </div>
-                        )}
-                        <div className="text-[11px] text-retro-accent">
-                          {session.messages.length} messages · Updated{' '}
-                          {formatTimestamp(session.updatedAt)}
+        {orderedSessions.length === 0 ? (
+          <div className="text-xs text-retro-accent">
+            No sessions yet. Start a chat to create your first session.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {orderedSessions.map((session) => {
+              const isEditing = editingId === session.id;
+              const isActive = session.id === activeSessionId;
+              return (
+                <div
+                  key={session.id}
+                  className={cn(
+                    'flex flex-col gap-2 border border-retro-border bg-retro-surface p-2 text-xs',
+                    isActive && 'ring-1 ring-retro-accent'
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      {isEditing ? (
+                        <div className="flex gap-2">
+                          <Input
+                            value={nameDraft}
+                            onChange={(event) => setNameDraft(event.target.value)}
+                            className="h-7 text-xs"
+                          />
+                          <Button
+                            size="sm"
+                            className="h-7 px-2 text-[11px]"
+                            onClick={() => handleRenameSave(session.id)}
+                          >
+                            Save
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-[11px]"
+                            onClick={() => {
+                              setEditingId(null);
+                              setNameDraft('');
+                            }}
+                          >
+                            Cancel
+                          </Button>
                         </div>
-                      </div>
-                      {!isEditing && (
-                        <Button
-                          size="sm"
-                          className="h-7 px-2 text-[11px]"
-                          onClick={() => handleOpen(session.id)}
-                        >
-                          Open
-                        </Button>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-retro-text">
+                            {session.name}
+                          </span>
+                          {session.archived && (
+                            <span className="rounded border border-retro-border px-1 text-[10px] uppercase text-retro-accent">
+                              Archived
+                            </span>
+                          )}
+                        </div>
                       )}
+                      <div className="text-[11px] text-retro-accent">
+                        {session.messages.length} messages · Updated{' '}
+                        {formatTimestamp(session.updatedAt)}
+                      </div>
                     </div>
                     {!isEditing && (
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-[11px]"
-                          onClick={() => handleRenameStart(session.id, session.name)}
-                        >
-                          Rename
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-[11px]"
-                          onClick={() => handleArchiveToggle(session.id, session.archived)}
-                        >
-                          {session.archived ? 'Unarchive' : 'Archive'}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-[11px] text-red-200"
-                          onClick={() => handleDelete(session.id)}
-                        >
-                          Delete
-                        </Button>
-                      </div>
+                      <Button
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => handleOpen(session.id)}
+                      >
+                        Open
+                      </Button>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </ScrollArea>
+                  {!isEditing && (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => handleRenameStart(session.id, session.name)}
+                      >
+                        Rename
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => handleArchiveToggle(session.id, session.archived)}
+                      >
+                        {session.archived ? 'Unarchive' : 'Archive'}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[11px] text-red-200"
+                        onClick={() => handleDelete(session.id)}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -112,7 +112,9 @@ export function OsWindow({
           onMinimize={onMinimize}
           variant="windows"
         />
-        <div className="flex-1 overflow-hidden p-4">{children}</div>
+        <div className="os-window-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4">
+          {children}
+        </div>
       </div>
     </Rnd>
   );

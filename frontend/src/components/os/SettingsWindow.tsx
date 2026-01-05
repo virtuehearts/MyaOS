@@ -64,7 +64,7 @@ export function SettingsWindow({
   }, [useMemory]);
 
   return (
-    <div className="flex h-full flex-col gap-4 text-sm text-retro-text">
+    <div className="flex min-h-full flex-col gap-4 text-sm text-retro-text">
       <div>
         <h2 className="text-base font-semibold">OpenRouter Settings</h2>
         <p className="text-xs text-retro-accent">
