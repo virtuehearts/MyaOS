@@ -12,6 +12,7 @@ import type { OpenRouterChatOptions } from '@/lib/openrouter';
 import { createOpenRouterChatCompletion } from '@/lib/openrouter';
 import { useApiKeyStore } from '@/store/apiKeyStore';
 import { useChatStore } from '@/store/chatStore';
+import { useEmotionStore } from '@/store/emotionStore';
 
 const makeId = () =>
   typeof crypto !== 'undefined' ? crypto.randomUUID() : `${Date.now()}`;
@@ -40,9 +41,12 @@ export function ChatWindow() {
     model,
     temperature,
     useMemory,
+    persona,
+    usePersona,
     addMessage,
     clearMessages
   } = useChatStore();
+  const { emotion } = useEmotionStore();
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +68,28 @@ export function ChatWindow() {
     }
     return memory.map((item) => `• ${item.content}`).join('\n');
   }, [memory, useMemory]);
+
+  const systemPrompt = useMemo(() => {
+    const sections: string[] = [];
+    const trimmedPersona = persona.trim();
+    if (usePersona && trimmedPersona) {
+      sections.push(`Persona/character context:\n${trimmedPersona}`);
+    }
+    if (systemMemory) {
+      sections.push(`Memory context:\n${systemMemory}`);
+    }
+    sections.push(`Current emotional tone: ${emotion}`);
+    sections.push(
+      [
+        'Include control data for emotional-state processing in a <control>...</control> block at the end of your reply.',
+        'The control block should contain only control JSON and should never be user-facing content.',
+        controlState ? `Previous control data:\n${controlState}` : null
+      ]
+        .filter(Boolean)
+        .join('\n')
+    );
+    return sections.join('\n\n');
+  }, [controlState, emotion, persona, systemMemory, usePersona]);
 
   const submitRequest = async (request: OpenRouterChatOptions) => {
     setStatus('sending');
@@ -106,23 +132,9 @@ export function ChatWindow() {
     setDraft('');
 
     const openRouterMessages = [
-      ...(systemMemory
-        ? [
-            {
-              role: 'system' as const,
-              content: `Memory context:\n${systemMemory}`
-            }
-          ]
-        : []),
       {
         role: 'system' as const,
-        content: [
-          'Include control data for emotional-state processing in a <control>...</control> block at the end of your reply.',
-          'The control block should contain only control JSON and should never be user-facing content.',
-          controlState ? `Previous control data:\n${controlState}` : null
-        ]
-          .filter(Boolean)
-          .join('\n')
+        content: systemPrompt
       },
       ...messages.map((message) => ({
         role: message.role,

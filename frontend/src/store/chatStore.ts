@@ -22,6 +22,8 @@ interface ChatStore {
   model: string;
   temperature: number;
   useMemory: boolean;
+  persona: string;
+  usePersona: boolean;
   addMessage: (message: ChatMessage) => void;
   clearMessages: () => void;
   addMemory: (entry: MemoryEntry) => void;
@@ -30,6 +32,8 @@ interface ChatStore {
   setModel: (model: string) => void;
   setTemperature: (temperature: number) => void;
   setUseMemory: (value: boolean) => void;
+  setPersona: (persona: string) => void;
+  setUsePersona: (value: boolean) => void;
 }
 
 const storage =
@@ -45,6 +49,8 @@ export const useChatStore = create<ChatStore>()(
       model: 'nvidia/nemotron-nano-12b-v2-vl:free',
       temperature: 0.7,
       useMemory: true,
+      persona: '',
+      usePersona: false,
       addMessage: (message) =>
         set((state) => ({ messages: [...state.messages, message] })),
       clearMessages: () => set({ messages: [] }),
@@ -55,7 +61,9 @@ export const useChatStore = create<ChatStore>()(
       clearMemory: () => set({ memory: [] }),
       setModel: (model) => set({ model }),
       setTemperature: (temperature) => set({ temperature }),
-      setUseMemory: (value) => set({ useMemory: value })
+      setUseMemory: (value) => set({ useMemory: value }),
+      setPersona: (persona) => set({ persona }),
+      setUsePersona: (value) => set({ usePersona: value })
     }),
     {
       name: 'mya-chat-store',
@@ -65,7 +73,9 @@ export const useChatStore = create<ChatStore>()(
         memory: state.memory,
         model: state.model,
         temperature: state.temperature,
-        useMemory: state.useMemory
+        useMemory: state.useMemory,
+        persona: state.persona,
+        usePersona: state.usePersona
       })
     }
   )
