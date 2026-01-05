@@ -53,7 +53,7 @@ export function TitleBar({
   return (
     <div
       className={cn(
-        'flex items-center justify-between border-b border-retro-border px-3 py-1 text-xs',
+        'os-titlebar-drag flex items-center justify-between border-b border-retro-border px-3 py-1 text-xs',
         isActive ? 'bg-retro-title-active' : 'bg-retro-surface'
       )}
     >
