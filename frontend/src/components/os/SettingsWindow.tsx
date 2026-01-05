@@ -193,7 +193,7 @@ export function SettingsWindow({
       <div>
         <h2 className="text-base font-semibold">Desktop Settings</h2>
         <p className="text-xs text-retro-accent">
-          Choose a JPG/PNG wallpaper. Images are auto-stretched to fill the desktop.
+          Choose a JPG/JPEG/PNG wallpaper. Images are auto-stretched to fill the desktop.
         </p>
       </div>
 
@@ -218,7 +218,7 @@ export function SettingsWindow({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg"
+          accept="image/png,image/jpeg,image/jpg,.jpg"
           className="hidden"
           onChange={(event) => {
             const file = event.target.files?.[0];
