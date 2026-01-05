@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react';
-import { Archive, MessageCircle, Settings, Terminal } from 'lucide-react';
+import { Archive, MessageCircle, MessagesSquare, Settings, Terminal } from 'lucide-react';
 
 import { ChatWindow } from '@/components/os/ChatWindow';
 import { ConsoleWindow } from '@/components/os/ConsoleWindow';
+import { MyChatsWindow } from '@/components/os/MyChatsWindow';
 import { MemoryWindow } from '@/components/os/MemoryWindow';
 import { SettingsWindow } from '@/components/os/SettingsWindow';
 import type { WindowId } from '@/store/osStore';
@@ -85,6 +86,19 @@ export const appRegistry: AppRegistryEntry[] = [
     pinned: false,
     desktop: true,
     render: () => <ConsoleWindow />
+  },
+  {
+    id: 'my-chats',
+    label: 'My Chats',
+    title: 'My Chats',
+    description: 'Manage sessions',
+    route: '/apps/my-chats',
+    accent: 'bg-retro-accent',
+    icon: <MessagesSquare className="h-4 w-4" />,
+    startMenuSection: 'primary',
+    pinned: false,
+    desktop: true,
+    render: () => <MyChatsWindow />
   }
 ];
 
