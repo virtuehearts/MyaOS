@@ -36,13 +36,15 @@ const stripControlBlock = (content: string) => {
 export function ChatWindow() {
   const { apiKey } = useApiKeyStore();
   const {
-    messages,
+    sessions,
+    activeSessionId,
     memory,
     model,
     temperature,
     useMemory,
     persona,
     usePersona,
+    ensureActiveSession,
     addMessage,
     clearMessages
   } = useChatStore();
@@ -57,6 +59,17 @@ export function ChatWindow() {
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const hasApiKey = Boolean(apiKey);
+
+  useEffect(() => {
+    ensureActiveSession();
+  }, [ensureActiveSession]);
+
+  const activeSession = useMemo(
+    () => sessions.find((session) => session.id === activeSessionId) ?? null,
+    [sessions, activeSessionId]
+  );
+
+  const messages = activeSession?.messages ?? [];
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -176,7 +189,9 @@ export function ChatWindow() {
     <Card className="flex h-full flex-col border border-retro-border bg-retro-surface text-retro-text">
       <CardHeader className="border-b border-retro-border bg-retro-title-active">
         <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm font-semibold text-retro-text">Mya Chat</CardTitle>
+          <CardTitle className="text-sm font-semibold text-retro-text">
+            {activeSession?.name ?? 'Mya Chat'}
+          </CardTitle>
           <Button
             variant="ghost"
             size="sm"

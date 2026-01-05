@@ -9,6 +9,7 @@ import { StartMenu } from '@/components/os/StartMenu';
 import { Taskbar } from '@/components/os/Taskbar';
 import { apiRequest } from '@/lib/api';
 import { AuthUser, useAuthStore } from '@/store/authStore';
+import { useChatStore } from '@/store/chatStore';
 import { useOsStore, type WindowId } from '@/store/osStore';
 
 export function OsShell() {
@@ -22,6 +23,7 @@ export function OsShell() {
     setWindowResizing,
     setWindowSize
   } = useOsStore();
+  const { markChatClosed } = useChatStore();
   const [startMenuOpen, setStartMenuOpen] = useState(false);
   const [desktopBackground, setDesktopBackground] = useState<string | null>(null);
   const { token, user, setUser, clearSession, status, setStatus } = useAuthStore();
@@ -64,6 +66,13 @@ export function OsShell() {
   const handleDesktopLaunch = (id: WindowId) => {
     openWindow(id);
     focusWindow(id);
+  };
+
+  const handleCloseWindow = (id: WindowId) => {
+    if (id === 'chat') {
+      markChatClosed();
+    }
+    closeWindow(id);
   };
 
   const windowContext = {
@@ -129,7 +138,7 @@ export function OsShell() {
             minWidth={window.minWidth}
             minHeight={window.minHeight}
             zIndex={window.zIndex}
-            onClose={() => closeWindow(window.id)}
+            onClose={() => handleCloseWindow(window.id)}
             onMinimize={() => toggleMinimize(window.id)}
             onFocus={() => focusWindow(window.id)}
             onResizeStart={() => setWindowResizing(window.id, true)}
