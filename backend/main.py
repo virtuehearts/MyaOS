@@ -279,6 +279,11 @@ class TextFileResponse(BaseModel):
     content: str
 
 
+class FolderCreateRequest(BaseModel):
+    bucket: str
+    path: str
+
+
 class UserProfile(BaseModel):
     user_id: str
     email: str
@@ -688,6 +693,17 @@ def _normalize_request_path(path: str) -> str:
     return normalized.lstrip("/")
 
 
+def _normalize_directory_path(path: Optional[str]) -> str:
+    if not path:
+        return ""
+    normalized = os.path.normpath(path).replace("\\", "/")
+    if normalized in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    if os.path.isabs(normalized) or normalized.startswith("../"):
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    return normalized.strip("/")
+
+
 def _ensure_allowed_extension(bucket: str, filename: str) -> None:
     if not _is_allowed_extension(bucket, filename):
         raise HTTPException(
@@ -712,15 +728,39 @@ def _is_allowed_extension(bucket: str, filename: str) -> bool:
     return ext in allowed
 
 
-def _resolve_bucket_path(bucket: str, requested_path: str) -> Tuple[str, str]:
+def _get_user_bucket_dir(bucket: str, user: UserProfile) -> str:
     config = _get_bucket_config(bucket)
     base_dir = config["path"]
+    return os.path.join(base_dir, user.user_id)
+
+
+def _resolve_bucket_path(
+    bucket: str,
+    requested_path: str,
+    user: UserProfile,
+    enforce_extension: bool = True,
+) -> Tuple[str, str]:
+    base_dir = _get_user_bucket_dir(bucket, user)
     normalized = _normalize_request_path(requested_path)
     full_path = os.path.normpath(os.path.join(base_dir, normalized))
     if os.path.commonpath([base_dir, full_path]) != base_dir:
         raise HTTPException(status_code=400, detail="Invalid path.")
-    _ensure_allowed_extension(bucket, normalized)
+    if enforce_extension:
+        _ensure_allowed_extension(bucket, normalized)
     return base_dir, full_path
+
+
+def _resolve_bucket_directory(
+    bucket: str,
+    requested_path: Optional[str],
+    user: UserProfile,
+) -> Tuple[str, str, str]:
+    base_dir = _get_user_bucket_dir(bucket, user)
+    normalized = _normalize_directory_path(requested_path)
+    full_path = os.path.normpath(os.path.join(base_dir, normalized))
+    if os.path.commonpath([base_dir, full_path]) != base_dir:
+        raise HTTPException(status_code=400, detail="Invalid path.")
+    return base_dir, full_path, normalized
 
 
 def _build_file_entry(base_dir: str, full_path: str) -> FileEntry:
@@ -731,6 +771,17 @@ def _build_file_entry(base_dir: str, full_path: str) -> FileEntry:
         size=stat_info.st_size,
         modified=datetime.fromtimestamp(stat_info.st_mtime, tz=timezone.utc),
         type="file",
+    )
+
+
+def _build_directory_entry(base_dir: str, full_path: str) -> FileEntry:
+    stat_info = os.stat(full_path)
+    relative = os.path.relpath(full_path, base_dir).replace(os.sep, "/")
+    return FileEntry(
+        name=relative,
+        size=0,
+        modified=datetime.fromtimestamp(stat_info.st_mtime, tz=timezone.utc),
+        type="directory",
     )
 
 
@@ -2986,40 +3037,43 @@ def memory_import_xml(
 @app.get("/files", response_model=FileListResponse)
 def files_list(
     bucket: str,
+    path: Optional[str] = None,
     user: UserProfile = Depends(_current_user),
 ) -> FileListResponse:
-    _ = user
-    config = _get_bucket_config(bucket)
-    base_dir = config["path"]
-    if not os.path.isdir(base_dir):
+    base_dir, target_dir, _ = _resolve_bucket_directory(bucket, path, user)
+    if not os.path.isdir(target_dir):
         return FileListResponse(entries=[])
     entries: List[FileEntry] = []
-    for root, _, files in os.walk(base_dir):
-        for filename in files:
-            full_path = os.path.join(root, filename)
-            relative_name = os.path.relpath(full_path, base_dir).replace(os.sep, "/")
+    with os.scandir(target_dir) as directory_entries:
+        for entry in directory_entries:
+            if entry.is_dir():
+                entries.append(_build_directory_entry(base_dir, entry.path))
+                continue
+            if not entry.is_file():
+                continue
+            relative_name = os.path.relpath(entry.path, base_dir).replace(os.sep, "/")
             if not _is_allowed_extension(bucket, relative_name):
                 continue
-            entries.append(_build_file_entry(base_dir, full_path))
-    entries.sort(key=lambda entry: entry.name)
+            entries.append(_build_file_entry(base_dir, entry.path))
+    entries.sort(key=lambda entry: (entry.type != "directory", entry.name))
     return FileListResponse(entries=entries)
 
 
 @app.post("/files/upload", response_model=FileEntry)
 def files_upload(
     bucket: str = Form(...),
+    path: Optional[str] = Form(None),
     file: UploadFile = File(...),
     user: UserProfile = Depends(_current_user),
 ) -> FileEntry:
-    _ = user
     if not file.filename:
         raise HTTPException(status_code=400, detail="File name is required.")
     filename = os.path.basename(file.filename)
     _ensure_allowed_extension(bucket, filename)
-    config = _get_bucket_config(bucket)
-    base_dir = config["path"]
-    os.makedirs(base_dir, exist_ok=True)
-    target_path = os.path.join(base_dir, filename)
+    base_dir, target_dir, normalized_dir = _resolve_bucket_directory(bucket, path, user)
+    os.makedirs(target_dir, exist_ok=True)
+    relative_path = "/".join(filter(None, [normalized_dir, filename]))
+    target_path = os.path.join(base_dir, relative_path)
     with open(target_path, "wb") as output_file:
         shutil.copyfileobj(file.file, output_file)
     return _build_file_entry(base_dir, target_path)
@@ -3031,8 +3085,7 @@ def files_download(
     path: str,
     user: UserProfile = Depends(_current_user),
 ) -> FileResponse:
-    _ = user
-    _, full_path = _resolve_bucket_path(bucket, path)
+    _, full_path = _resolve_bucket_path(bucket, path, user)
     if not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="File not found.")
     return FileResponse(full_path, filename=os.path.basename(full_path))
@@ -3043,16 +3096,40 @@ def files_rename(
     payload: FileRenameRequest,
     user: UserProfile = Depends(_current_user),
 ) -> FileEntry:
-    _ = user
-    base_dir, from_path = _resolve_bucket_path(payload.bucket, payload.from_path)
-    _, to_path = _resolve_bucket_path(payload.bucket, payload.to_path)
-    if not os.path.isfile(from_path):
+    base_dir, from_path = _resolve_bucket_path(
+        payload.bucket, payload.from_path, user, enforce_extension=False
+    )
+    _, to_path = _resolve_bucket_path(
+        payload.bucket, payload.to_path, user, enforce_extension=False
+    )
+    if not os.path.exists(from_path):
         raise HTTPException(status_code=404, detail="File not found.")
     if os.path.exists(to_path):
         raise HTTPException(status_code=409, detail="Target file already exists.")
+    if os.path.isfile(from_path):
+        _ensure_allowed_extension(payload.bucket, payload.from_path)
+        _ensure_allowed_extension(payload.bucket, payload.to_path)
     os.makedirs(os.path.dirname(to_path), exist_ok=True)
     os.rename(from_path, to_path)
+    if os.path.isdir(to_path):
+        return _build_directory_entry(base_dir, to_path)
     return _build_file_entry(base_dir, to_path)
+
+
+@app.post("/files/folder", response_model=FileEntry)
+def files_folder_create(
+    payload: FolderCreateRequest,
+    user: UserProfile = Depends(_current_user),
+) -> FileEntry:
+    base_dir, target_dir, normalized = _resolve_bucket_directory(
+        payload.bucket, payload.path, user
+    )
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Folder name is required.")
+    if os.path.exists(target_dir):
+        raise HTTPException(status_code=409, detail="Folder already exists.")
+    os.makedirs(target_dir, exist_ok=False)
+    return _build_directory_entry(base_dir, target_dir)
 
 
 @app.delete("/files")
@@ -3061,11 +3138,14 @@ def files_delete(
     path: str,
     user: UserProfile = Depends(_current_user),
 ) -> Dict[str, str]:
-    _ = user
-    _, full_path = _resolve_bucket_path(bucket, path)
-    if not os.path.isfile(full_path):
+    _, full_path = _resolve_bucket_path(bucket, path, user, enforce_extension=False)
+    if os.path.isfile(full_path):
+        _ensure_allowed_extension(bucket, path)
+        os.remove(full_path)
+    elif os.path.isdir(full_path):
+        shutil.rmtree(full_path)
+    else:
         raise HTTPException(status_code=404, detail="File not found.")
-    os.remove(full_path)
     return {"status": "deleted", "path": _normalize_request_path(path)}
 
 
@@ -3075,9 +3155,8 @@ def files_text_get(
     path: str,
     user: UserProfile = Depends(_current_user),
 ) -> TextFileResponse:
-    _ = user
     _ensure_text_extension(path)
-    base_dir, full_path = _resolve_bucket_path(bucket, path)
+    base_dir, full_path = _resolve_bucket_path(bucket, path, user)
     if not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail="File not found.")
     with open(full_path, "r", encoding="utf-8") as text_file:
@@ -3090,9 +3169,8 @@ def files_text_post(
     payload: TextFileRequest,
     user: UserProfile = Depends(_current_user),
 ) -> FileEntry:
-    _ = user
     _ensure_text_extension(payload.path)
-    base_dir, full_path = _resolve_bucket_path(payload.bucket, payload.path)
+    base_dir, full_path = _resolve_bucket_path(payload.bucket, payload.path, user)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
     with open(full_path, "w", encoding="utf-8") as text_file:
         text_file.write(payload.content)
