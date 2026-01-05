@@ -40,10 +40,6 @@ export function OsWindow({
   onResizeStart,
   onResizeStop
 }: OsWindowProps) {
-  if (isMinimized) {
-    return null;
-  }
-
   const handleClass =
     'absolute bg-retro-title-active border border-retro-border';
 
@@ -69,7 +65,7 @@ export function OsWindow({
         });
       }}
       resizeGrid={[8, 8]}
-      style={{ zIndex }}
+      style={{ zIndex, display: isMinimized ? 'none' : 'block' }}
       className="mya-panel border"
       aria-label={`${id}-window`}
       resizeHandleComponent={{

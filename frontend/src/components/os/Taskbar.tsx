@@ -20,7 +20,8 @@ export function Taskbar({
   isStartDisabled,
   startButtonRef
 }: TaskbarProps) {
-  const { windows, openWindow, focusWindow } = useOsStore();
+  const { windows, activeWindowId, openWindow, focusWindow, toggleMinimize } =
+    useOsStore();
 
   const handleLaunch = (id: WindowId) => {
     const target = windows.find((window) => window.id === id);
@@ -37,6 +38,19 @@ export function Taskbar({
   const now = new Date();
   const clockLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const pinnedApps = appRegistry.filter((app) => app.pinned);
+  const openWindows = windows.filter((window) => window.isOpen);
+
+  const handleTaskbarToggle = (id: WindowId) => {
+    const target = windows.find((window) => window.id === id);
+    if (!target) {
+      return;
+    }
+    if (target.isMinimized) {
+      focusWindow(id);
+      return;
+    }
+    toggleMinimize(id);
+  };
 
   return (
     <footer className="fixed bottom-0 left-0 z-50 w-full border-t border-retro-border bg-retro-surface">
@@ -50,7 +64,7 @@ export function Taskbar({
         >
           MyaOS
         </Button>
-        <div className="flex flex-1 items-center justify-center gap-2">
+        <div className="flex flex-1 items-center gap-2 overflow-x-auto">
           {pinnedApps.map((app) => (
             <Button
               key={app.id}
@@ -64,6 +78,27 @@ export function Taskbar({
               <span className="sr-only">{app.label}</span>
             </Button>
           ))}
+          {openWindows.map((window) => {
+            const app = appRegistry.find((item) => item.id === window.id);
+            const isActive = activeWindowId === window.id && !window.isMinimized;
+            return (
+              <Button
+                key={window.id}
+                variant="outline"
+                className={cn(
+                  'h-8 min-w-[7rem] justify-start gap-2 px-3',
+                  isActive && 'bg-retro-title-active',
+                  window.isMinimized && 'opacity-70'
+                )}
+                onClick={() => handleTaskbarToggle(window.id)}
+                title={window.title}
+                aria-label={`${window.title} taskbar button`}
+              >
+                {app?.icon}
+                <span className="truncate">{window.title}</span>
+              </Button>
+            );
+          })}
         </div>
         <div className="flex items-center gap-3 text-xs">
           <TaskbarMusicPlayer />
