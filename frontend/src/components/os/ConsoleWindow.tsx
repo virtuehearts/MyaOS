@@ -41,7 +41,7 @@ export function ConsoleWindow() {
   const availableDirectories = useMemo(
     () => ({
       '/': ['apps', 'memory', 'system'],
-      '/apps': ['chat', 'memory', 'settings', 'console'],
+      '/apps': ['chat', 'memory', 'settings', 'console', 'browser'],
       '/memory': [`vault.txt (${memory.length} entries)`],
       '/system': ['status.log', 'boot.cfg']
     }),

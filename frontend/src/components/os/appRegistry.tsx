@@ -2,12 +2,14 @@ import type { ReactNode } from 'react';
 import {
   Archive,
   Folder,
+  Globe,
   MessageCircle,
   MessagesSquare,
   Settings,
   Terminal
 } from 'lucide-react';
 
+import { BrowserWindow } from '@/components/os/BrowserWindow';
 import { ChatWindow } from '@/components/os/ChatWindow';
 import { ConsoleWindow } from '@/components/os/ConsoleWindow';
 import { FileManagerWindow } from '@/components/os/FileManagerWindow';
@@ -120,6 +122,19 @@ export const appRegistry: AppRegistryEntry[] = [
     pinned: false,
     desktop: true,
     render: () => <FileManagerWindow />
+  },
+  {
+    id: 'browser',
+    label: 'Browser',
+    title: 'Browser',
+    description: 'Browse the web',
+    route: '/apps/browser',
+    accent: 'bg-retro-title-active',
+    icon: <Globe className="h-4 w-4" />,
+    startMenuSection: 'primary',
+    pinned: false,
+    desktop: true,
+    render: () => <BrowserWindow />
   }
 ];
 

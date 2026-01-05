@@ -7,7 +7,8 @@ export type WindowId =
   | 'settings'
   | 'console'
   | 'my-chats'
-  | 'file-manager';
+  | 'file-manager'
+  | 'browser';
 
 export interface OsWindowState {
   id: WindowId;
@@ -106,6 +107,18 @@ const baseWindows: OsWindowState[] = [
     height: 420,
     minWidth: 420,
     minHeight: 300
+  },
+  {
+    id: 'browser',
+    title: 'Browser',
+    isOpen: false,
+    isMinimized: false,
+    isResizing: false,
+    zIndex: 3,
+    width: 720,
+    height: 520,
+    minWidth: 480,
+    minHeight: 360
   }
 ];
 
