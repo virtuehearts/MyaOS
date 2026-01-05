@@ -54,10 +54,13 @@ export function Taskbar({
             <Button
               key={app.id}
               variant="ghost"
-              className="h-8 px-3"
+              className="h-8 w-8 p-0"
               onClick={() => handleLaunch(app.id)}
+              title={app.label}
+              aria-label={app.label}
             >
-              {app.label}
+              {app.icon}
+              <span className="sr-only">{app.label}</span>
             </Button>
           ))}
         </div>
