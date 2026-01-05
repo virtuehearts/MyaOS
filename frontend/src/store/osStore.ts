@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-export type WindowId = 'chat' | 'memory' | 'settings' | 'console' | 'my-chats';
+export type WindowId =
+  | 'chat'
+  | 'memory'
+  | 'settings'
+  | 'console'
+  | 'my-chats'
+  | 'file-manager';
 
 export interface OsWindowState {
   id: WindowId;
@@ -88,6 +94,18 @@ const baseWindows: OsWindowState[] = [
     height: 380,
     minWidth: 360,
     minHeight: 260
+  },
+  {
+    id: 'file-manager',
+    title: 'File Manager',
+    isOpen: false,
+    isMinimized: false,
+    isResizing: false,
+    zIndex: 4,
+    width: 620,
+    height: 420,
+    minWidth: 420,
+    minHeight: 300
   }
 ];
 
