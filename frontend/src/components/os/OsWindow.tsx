@@ -110,6 +110,7 @@ export function OsWindow({
           isActive={isActive}
           onClose={onClose}
           onMinimize={onMinimize}
+          variant="windows"
         />
         <div className="flex-1 overflow-hidden p-4">{children}</div>
       </div>
