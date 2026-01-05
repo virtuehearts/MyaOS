@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { useChatStore } from '@/store/chatStore';
 import { useEmotionStore } from '@/store/emotionStore';
 
@@ -171,32 +170,30 @@ export function ConsoleWindow() {
   };
 
   return (
-    <Card className="flex h-full flex-col border border-retro-border bg-retro-surface text-retro-text">
+    <Card className="flex min-h-full flex-col border border-retro-border bg-retro-surface text-retro-text">
       <CardHeader className="border-b border-retro-border bg-retro-title-active">
         <CardTitle className="text-sm font-semibold text-retro-text">Console</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-4 text-xs text-retro-accent">
-        <ScrollArea className="flex-1 pr-2">
-          <div className="space-y-2 font-mono text-[11px]">
-            {entries.map((entry) => (
-              <div
-                key={entry.id}
-                className={
-                  entry.type === 'error'
-                    ? 'text-red-200'
-                    : entry.type === 'command'
-                      ? 'text-retro-text'
-                      : entry.type === 'system'
-                        ? 'text-retro-text/80'
-                        : 'text-retro-accent'
-                }
-              >
-                {entry.content}
-              </div>
-            ))}
-            <div ref={bottomRef} />
-          </div>
-        </ScrollArea>
+        <div className="space-y-2 font-mono text-[11px]">
+          {entries.map((entry) => (
+            <div
+              key={entry.id}
+              className={
+                entry.type === 'error'
+                  ? 'text-red-200'
+                  : entry.type === 'command'
+                    ? 'text-retro-text'
+                    : entry.type === 'system'
+                      ? 'text-retro-text/80'
+                      : 'text-retro-accent'
+              }
+            >
+              {entry.content}
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
         <form
           className="flex items-center gap-2 border-t border-retro-border pt-2 font-mono text-[11px]"
           onSubmit={(event) => {

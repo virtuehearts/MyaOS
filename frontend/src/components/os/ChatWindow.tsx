@@ -7,7 +7,6 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import type { OpenRouterChatOptions } from '@/lib/openrouter';
 import { createOpenRouterChatCompletion } from '@/lib/openrouter';
 import { useApiKeyStore } from '@/store/apiKeyStore';
@@ -186,7 +185,7 @@ export function ChatWindow() {
     .find((message) => message.role === 'assistant');
 
   return (
-    <Card className="flex h-full flex-col border border-retro-border bg-retro-surface text-retro-text">
+    <Card className="flex min-h-full flex-col border border-retro-border bg-retro-surface text-retro-text">
       <CardHeader className="border-b border-retro-border bg-retro-title-active">
         <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-sm font-semibold text-retro-text">
@@ -212,54 +211,52 @@ export function ChatWindow() {
           </div>
         )}
         <div className="relative flex-1">
-          <ScrollArea className="h-full pr-2">
-            <div className="space-y-4 pb-12">
-              {messages.length === 0 && (
-                <div className="text-xs text-retro-accent">
-                  No messages yet. Say hello to begin.
-                </div>
-              )}
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className="rounded-xl border border-retro-border bg-retro-title-active/70 p-3"
-                >
-                  <div className="flex items-start gap-3">
-                    <Avatar className="h-9 w-9">
-                      <AvatarFallback>
-                        {message.role === 'assistant' ? 'M' : 'Y'}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 space-y-2">
-                      <div>
-                        <p className="text-sm font-semibold text-retro-text">
-                          {message.role === 'assistant' ? 'Mya' : 'You'}
-                        </p>
-                        <p className="text-sm text-retro-accent">
-                          {message.content}
-                        </p>
-                      </div>
-                      <div className="flex justify-end">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-retro-accent hover:text-retro-text"
-                          aria-label="Copy message"
-                          onClick={() => void handleCopy(message.content)}
-                        >
-                          <Copy className="h-4 w-4" />
-                        </Button>
-                      </div>
+          <div className="space-y-4 pb-12">
+            {messages.length === 0 && (
+              <div className="text-xs text-retro-accent">
+                No messages yet. Say hello to begin.
+              </div>
+            )}
+            {messages.map((message) => (
+              <div
+                key={message.id}
+                className="rounded-xl border border-retro-border bg-retro-title-active/70 p-3"
+              >
+                <div className="flex items-start gap-3">
+                  <Avatar className="h-9 w-9">
+                    <AvatarFallback>
+                      {message.role === 'assistant' ? 'M' : 'Y'}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 space-y-2">
+                    <div>
+                      <p className="text-sm font-semibold text-retro-text">
+                        {message.role === 'assistant' ? 'Mya' : 'You'}
+                      </p>
+                      <p className="text-sm text-retro-accent">
+                        {message.content}
+                      </p>
+                    </div>
+                    <div className="flex justify-end">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-retro-accent hover:text-retro-text"
+                        aria-label="Copy message"
+                        onClick={() => void handleCopy(message.content)}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
                     </div>
                   </div>
                 </div>
-              ))}
-              {status === 'sending' && (
-                <div className="text-xs text-retro-accent">Mya is thinking…</div>
-              )}
-              <div ref={bottomRef} />
-            </div>
-          </ScrollArea>
+              </div>
+            ))}
+            {status === 'sending' && (
+              <div className="text-xs text-retro-accent">Mya is thinking…</div>
+            )}
+            <div ref={bottomRef} />
+          </div>
           <div className="absolute bottom-3 right-3 flex items-center gap-1 rounded-full border border-retro-border bg-retro-title-active/90 p-1 shadow-lg">
             <Button
               variant="ghost"

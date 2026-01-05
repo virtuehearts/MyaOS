@@ -28,3 +28,23 @@ body {
   border: 1px solid #3d3f45;
   backdrop-filter: none;
 }
+
+.os-window-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #6b6d74 #1c1d22;
+}
+
+.os-window-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.os-window-scrollbar::-webkit-scrollbar-track {
+  background: #1c1d22;
+}
+
+.os-window-scrollbar::-webkit-scrollbar-thumb {
+  background: #6b6d74;
+  border-radius: 999px;
+  border: 1px solid #1c1d22;
+}

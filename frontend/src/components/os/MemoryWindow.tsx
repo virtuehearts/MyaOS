@@ -3,7 +3,6 @@
 import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { useChatStore } from '@/store/chatStore';
 
 const makeId = () =>
@@ -24,7 +23,7 @@ export function MemoryWindow() {
   };
 
   return (
-    <div className="flex h-full flex-col gap-4 text-sm text-retro-text">
+    <div className="flex min-h-full flex-col gap-4 text-sm text-retro-text">
       <div>
         <h2 className="text-base font-semibold">Memory Vault</h2>
         <p className="text-xs text-retro-accent">
@@ -73,32 +72,30 @@ export function MemoryWindow() {
             </Button>
           )}
         </div>
-        <ScrollArea className="flex-1 pr-2">
-          {memory.length === 0 ? (
-            <div className="text-xs text-retro-accent">
-              No memories yet. Start a chat and save what matters.
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {memory.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-start justify-between gap-3 border border-retro-border bg-retro-surface p-2 text-xs"
+        {memory.length === 0 ? (
+          <div className="text-xs text-retro-accent">
+            No memories yet. Start a chat and save what matters.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {memory.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-start justify-between gap-3 border border-retro-border bg-retro-surface p-2 text-xs"
+              >
+                <span className="text-retro-text">{item.content}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeMemory(item.id)}
+                  className="h-6 px-2 text-[10px]"
                 >
-                  <span className="text-retro-text">{item.content}</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeMemory(item.id)}
-                    className="h-6 px-2 text-[10px]"
-                  >
-                    Remove
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </ScrollArea>
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
