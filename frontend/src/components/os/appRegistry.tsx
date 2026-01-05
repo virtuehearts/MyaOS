@@ -46,7 +46,7 @@ export const appRegistry: AppRegistryEntry[] = [
     accent: 'bg-retro-title-active',
     icon: <MessageCircle className="h-4 w-4" />,
     startMenuSection: 'primary',
-    pinned: true,
+    pinned: false,
     desktop: true,
     render: () => <ChatWindow />
   },
@@ -59,7 +59,7 @@ export const appRegistry: AppRegistryEntry[] = [
     accent: 'bg-retro-accent',
     icon: <Archive className="h-4 w-4" />,
     startMenuSection: 'primary',
-    pinned: true,
+    pinned: false,
     desktop: true,
     render: () => <MemoryWindow />
   },
@@ -72,7 +72,7 @@ export const appRegistry: AppRegistryEntry[] = [
     accent: 'bg-retro-border',
     icon: <Settings className="h-4 w-4" />,
     startMenuSection: 'primary',
-    pinned: true,
+    pinned: false,
     desktop: true,
     render: ({ desktopBackground, onBackgroundSelect, onClearBackground }) => (
       <SettingsWindow
