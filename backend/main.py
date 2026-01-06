@@ -205,6 +205,77 @@ class MemoryModule(BaseModel):
     trait_history: List[PersonalityTraitSnapshot] = Field(default_factory=list)
 
 
+class PersonaStateRecord(BaseModel):
+    emotion_state: EmotionState
+    emotion_baseline: EmotionState
+    routine_phase: str = "unspecified"
+    emotion_transitions: List[EmotionTransition] = Field(default_factory=list)
+    personality_traits: PersonalityTraits
+    goals: List[str] = Field(default_factory=list)
+    updated_at: datetime
+
+
+class ConversationMessageCreateRequest(BaseModel):
+    session_id: str
+    role: str
+    content: str
+    topic_tags: List[str] = Field(default_factory=list)
+
+
+class ConversationMessageRecord(BaseModel):
+    message_id: int
+    session_id: str
+    role: str
+    content: str
+    topic_tags: List[str]
+    created_at: datetime
+
+
+class MemoryManagerIngestResponse(BaseModel):
+    message: ConversationMessageRecord
+    persona_state: PersonaStateRecord
+
+
+class RetrievedMemory(BaseModel):
+    memory_id: str
+    content: str
+    score: float
+    tags: List[str] = Field(default_factory=list)
+    source_tags: List[str] = Field(default_factory=list)
+
+
+class MemoryManagerRetrieveResponse(BaseModel):
+    retrieved: List[RetrievedMemory]
+
+
+class MemoryManagerRetrieveRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+
+class ChatCompletionRequest(BaseModel):
+    session_id: str
+    message: str
+    topic_tags: List[str] = Field(default_factory=list)
+    model: str = DEFAULT_OPENROUTER_MODEL
+    temperature: float = 0.4
+    max_tokens: Optional[int] = None
+    top_k: int = 5
+
+
+class ChatCompletionResponse(BaseModel):
+    reply: str
+    retrieved: List[RetrievedMemory]
+    persona_state: PersonaStateRecord
+    timestamp: datetime
+
+
+class PersonaUpdateRequest(BaseModel):
+    goals: Optional[List[str]] = None
+    personality_traits: Optional[PersonalityTraits] = None
+    emotion_state: Optional[EmotionState] = None
+
+
 class MemoryImportRecord(BaseModel):
     content: str
     tags: List[str] = Field(default_factory=list)
@@ -442,6 +513,13 @@ APP_REGISTRY = [
         "endpoint": "/apps/chat",
     },
     {
+        "id": "chat-llm",
+        "name": "Chat (LLM)",
+        "description": "LLM-backed chat with memory-aware retrieval.",
+        "icon": "🧠",
+        "endpoint": "/apps/chat/llm",
+    },
+    {
         "id": "calculator",
         "name": "Calculator",
         "description": "Scientific expressions & quick math checks.",
@@ -553,8 +631,8 @@ class RateLimiter:
 
 RATE_LIMITER = RateLimiter()
 USER_LOOKUP_LOGS: Dict[str, List[LookupLogRecord]] = {}
-VECTOR_INDEX: Dict[str, FAISS] = {}
-VECTOR_INDEX_KEY = "global"
+MEMORY_VECTOR_INDEX: Dict[str, FAISS] = {}
+CONVERSATION_VECTOR_INDEX: Dict[str, FAISS] = {}
 
 
 def _normalize_email(email: str) -> str:
@@ -886,7 +964,10 @@ def _rows_to_memory_records(rows: Sequence[Dict[str, object]]) -> List[MemoryRec
     return records
 
 
-def _fetch_memory_rows(memory_id: Optional[str] = None) -> List[Dict[str, object]]:
+def _fetch_memory_rows(
+    user_id: str,
+    memory_id: Optional[str] = None,
+) -> List[Dict[str, object]]:
     with _db_connection() as connection:
         with connection.cursor() as cursor:
             if memory_id:
@@ -894,37 +975,152 @@ def _fetch_memory_rows(memory_id: Optional[str] = None) -> List[Dict[str, object
                     """
                     SELECT id, memory_id, content, salience, created_at, updated_at
                     FROM memories
-                    WHERE memory_id = %s
+                    WHERE user_id = %s AND memory_id = %s
                     """,
-                    (memory_id,),
+                    (user_id, memory_id),
                 )
             else:
                 cursor.execute(
                     """
                     SELECT id, memory_id, content, salience, created_at, updated_at
                     FROM memories
+                    WHERE user_id = %s
                     ORDER BY created_at ASC, id ASC
-                    """
+                    """,
+                    (user_id,),
                 )
             return cursor.fetchall()
 
 
-def _fetch_memory_record(memory_id: str) -> Optional[MemoryRecord]:
-    rows = _fetch_memory_rows(memory_id=memory_id)
+def _fetch_memory_record(user_id: str, memory_id: str) -> Optional[MemoryRecord]:
+    rows = _fetch_memory_rows(user_id, memory_id=memory_id)
     records = _rows_to_memory_records(rows)
     return records[0] if records else None
 
 
-def _fetch_all_memories() -> List[MemoryRecord]:
-    return _rows_to_memory_records(_fetch_memory_rows())
+def _fetch_all_memories(user_id: str) -> List[MemoryRecord]:
+    return _rows_to_memory_records(_fetch_memory_rows(user_id))
+
+
+def _fetch_memory_user_ids() -> List[str]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT DISTINCT user_id FROM memories")
+            rows = cursor.fetchall()
+    return [row["user_id"] for row in rows if row.get("user_id")]
+
+
+def _fetch_conversation_user_ids() -> List[str]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT DISTINCT user_id FROM conversation_messages")
+            rows = cursor.fetchall()
+    return [row["user_id"] for row in rows if row.get("user_id")]
 
 
 def _get_user_store(user_id: str) -> Dict[str, MemoryRecord]:
-    return {record.metadata.memory_id: record for record in _fetch_all_memories()}
+    return {record.metadata.memory_id: record for record in _fetch_all_memories(user_id)}
 
 
 def _get_user_logs(user_id: str) -> List[LookupLogRecord]:
     return USER_LOOKUP_LOGS.setdefault(user_id, [])
+
+
+def _rows_to_conversation_records(
+    rows: Sequence[Dict[str, object]],
+) -> List[ConversationMessageRecord]:
+    records: List[ConversationMessageRecord] = []
+    for row in rows:
+        topic_tags: List[str] = []
+        if row.get("topic_tags"):
+            try:
+                topic_tags = json.loads(row["topic_tags"])
+            except json.JSONDecodeError:
+                topic_tags = []
+        records.append(
+            ConversationMessageRecord(
+                message_id=int(row["id"]),
+                session_id=row["session_id"],
+                role=row["role"],
+                content=row["content"],
+                topic_tags=[str(tag) for tag in topic_tags],
+                created_at=_as_utc(row["created_at"]),
+            )
+        )
+    return records
+
+
+def _fetch_conversation_rows(
+    user_id: str,
+    session_id: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, object]]:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            if session_id:
+                sql = (
+                    """
+                    SELECT id, session_id, role, content, topic_tags, created_at
+                    FROM conversation_messages
+                    WHERE user_id = %s AND session_id = %s
+                    ORDER BY created_at DESC, id DESC
+                    """
+                )
+                params: Tuple[object, ...] = (user_id, session_id)
+            else:
+                sql = (
+                    """
+                    SELECT id, session_id, role, content, topic_tags, created_at
+                    FROM conversation_messages
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC, id DESC
+                    """
+                )
+                params = (user_id,)
+            if limit:
+                sql += " LIMIT %s"
+                params = (*params, limit)
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+    return list(reversed(rows))
+
+
+def _store_conversation_message(
+    user_id: str,
+    payload: ConversationMessageCreateRequest,
+) -> ConversationMessageRecord:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO conversation_messages (
+                    user_id, session_id, role, content, topic_tags, created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    payload.session_id,
+                    payload.role,
+                    payload.content,
+                    json.dumps(payload.topic_tags),
+                    datetime.now(timezone.utc),
+                ),
+            )
+            message_id = cursor.lastrowid
+        connection.commit()
+    return _rows_to_conversation_records(
+        [
+            {
+                "id": message_id,
+                "session_id": payload.session_id,
+                "role": payload.role,
+                "content": payload.content,
+                "topic_tags": json.dumps(payload.topic_tags),
+                "created_at": datetime.now(timezone.utc),
+            }
+        ]
+    )[0]
 
 
 def _safe_calculate(expression: str) -> float:
@@ -991,7 +1187,7 @@ def _baseline_traits() -> PersonalityTraits:
     )
 
 
-def _fetch_latest_trait_snapshot() -> Optional[PersonalityTraitSnapshot]:
+def _fetch_latest_trait_snapshot(user_id: str) -> Optional[PersonalityTraitSnapshot]:
     with _db_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -999,9 +1195,12 @@ def _fetch_latest_trait_snapshot() -> Optional[PersonalityTraitSnapshot]:
                 SELECT snapshot_at, openness, conscientiousness, extraversion,
                        agreeableness, neuroticism, signal_summary
                 FROM personality_trait_history
+                WHERE user_id = %s
                 ORDER BY snapshot_at DESC, id DESC
                 LIMIT 1
                 """
+                ,
+                (user_id,),
             )
             row = cursor.fetchone()
     if not row:
@@ -1025,7 +1224,10 @@ def _fetch_latest_trait_snapshot() -> Optional[PersonalityTraitSnapshot]:
     )
 
 
-def _fetch_trait_history(limit: int = TRAIT_HISTORY_LIMIT) -> List[PersonalityTraitSnapshot]:
+def _fetch_trait_history(
+    user_id: str,
+    limit: int = TRAIT_HISTORY_LIMIT,
+) -> List[PersonalityTraitSnapshot]:
     with _db_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1033,10 +1235,11 @@ def _fetch_trait_history(limit: int = TRAIT_HISTORY_LIMIT) -> List[PersonalityTr
                 SELECT snapshot_at, openness, conscientiousness, extraversion,
                        agreeableness, neuroticism, signal_summary
                 FROM personality_trait_history
+                WHERE user_id = %s
                 ORDER BY snapshot_at DESC, id DESC
                 LIMIT %s
                 """,
-                (limit,),
+                (user_id, limit),
             )
             rows = cursor.fetchall()
     snapshots: List[PersonalityTraitSnapshot] = []
@@ -1063,12 +1266,13 @@ def _fetch_trait_history(limit: int = TRAIT_HISTORY_LIMIT) -> List[PersonalityTr
     return snapshots
 
 
-def _current_personality_traits() -> PersonalityTraits:
-    latest_snapshot = _fetch_latest_trait_snapshot()
+def _current_personality_traits(user_id: str) -> PersonalityTraits:
+    latest_snapshot = _fetch_latest_trait_snapshot(user_id)
     return latest_snapshot.traits if latest_snapshot else _baseline_traits()
 
 
 def _store_trait_snapshot(
+    user_id: str,
     traits: PersonalityTraits,
     snapshot_at: datetime,
     signals: Dict[str, float],
@@ -1078,12 +1282,13 @@ def _store_trait_snapshot(
             cursor.execute(
                 """
                 INSERT INTO personality_trait_history (
-                    snapshot_at, openness, conscientiousness, extraversion,
+                    user_id, snapshot_at, openness, conscientiousness, extraversion,
                     agreeableness, neuroticism, signal_summary
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
+                    user_id,
                     snapshot_at,
                     traits.openness,
                     traits.conscientiousness,
@@ -1259,26 +1464,29 @@ def _evolve_traits(
 
 
 def _run_trait_evolution_job() -> None:
-    records = _fetch_all_memories()
-    latest_snapshot = _fetch_latest_trait_snapshot()
-    since = latest_snapshot.snapshot_at if latest_snapshot else None
-    signals = _collect_trait_signals(records, since)
-    if all(value == 0 for value in signals.values()):
-        return
-    base_traits = latest_snapshot.traits if latest_snapshot else _baseline_traits()
-    updated_traits = _evolve_traits(base_traits, signals)
-    snapshot_at = datetime.now(timezone.utc)
-    _store_trait_snapshot(updated_traits, snapshot_at, signals)
-    LOGGER.info(
-        "trait_evolution snapshot=%s traits=(%.3f,%.3f,%.3f,%.3f,%.3f) signals=%s",
-        snapshot_at.isoformat(),
-        updated_traits.openness,
-        updated_traits.conscientiousness,
-        updated_traits.extraversion,
-        updated_traits.agreeableness,
-        updated_traits.neuroticism,
-        signals,
-    )
+    user_ids = _fetch_memory_user_ids()
+    for user_id in user_ids:
+        records = _fetch_all_memories(user_id)
+        latest_snapshot = _fetch_latest_trait_snapshot(user_id)
+        since = latest_snapshot.snapshot_at if latest_snapshot else None
+        signals = _collect_trait_signals(records, since)
+        if all(value == 0 for value in signals.values()):
+            continue
+        base_traits = latest_snapshot.traits if latest_snapshot else _baseline_traits()
+        updated_traits = _evolve_traits(base_traits, signals)
+        snapshot_at = datetime.now(timezone.utc)
+        _store_trait_snapshot(user_id, updated_traits, snapshot_at, signals)
+        LOGGER.info(
+            "trait_evolution user=%s snapshot=%s traits=(%.3f,%.3f,%.3f,%.3f,%.3f) signals=%s",
+            user_id,
+            snapshot_at.isoformat(),
+            updated_traits.openness,
+            updated_traits.conscientiousness,
+            updated_traits.extraversion,
+            updated_traits.agreeableness,
+            updated_traits.neuroticism,
+            signals,
+        )
 
 
 def _trait_evolution_loop() -> None:
@@ -1291,7 +1499,7 @@ def _trait_evolution_loop() -> None:
         time.sleep(TRAIT_ANALYSIS_INTERVAL_SECONDS)
 
 
-def _memory_stats() -> Tuple[int, int]:
+def _memory_stats(user_id: str) -> Tuple[int, int]:
     with _db_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1299,7 +1507,10 @@ def _memory_stats() -> Tuple[int, int]:
                 SELECT COUNT(*) AS record_count,
                        COALESCE(SUM(CHAR_LENGTH(content)), 0) AS content_bytes
                 FROM memories
+                WHERE user_id = %s
                 """
+                ,
+                (user_id,),
             )
             row = cursor.fetchone()
     record_count = int(row["record_count"])
@@ -1313,7 +1524,7 @@ def _log_memory_event(
     memory_id: Optional[str] = None,
     detail: Optional[str] = None,
 ) -> None:
-    record_count, content_bytes = _memory_stats()
+    record_count, content_bytes = _memory_stats(user_id)
     LOGGER.info(
         "memory_event action=%s user_id=%s memory_id=%s record_count=%s content_bytes=%s detail=%s",
         action,
@@ -1495,6 +1706,7 @@ def _fetch_reflections(user_id: str) -> List[ReflectionRecord]:
 
 
 def _apply_imported_brain_state(
+    user_id: str,
     emotion_state: Optional[EmotionState],
     emotion_baseline: Optional[EmotionState],
     emotion_transitions: Sequence[EmotionTransition],
@@ -1502,19 +1714,19 @@ def _apply_imported_brain_state(
     personality_traits: Optional[PersonalityTraits],
     trait_history: Sequence[PersonalityTraitSnapshot],
 ) -> None:
-    global EMOTION_BASELINE
-    global EMOTION_STATE
-    global EMOTION_TRANSITIONS
-    global CURRENT_ROUTINE_PHASE
-
-    if emotion_baseline:
-        EMOTION_BASELINE = emotion_baseline
-    if emotion_state:
-        EMOTION_STATE = emotion_state
-    if emotion_transitions:
-        EMOTION_TRANSITIONS = list(emotion_transitions)[-MAX_EMOTION_TRANSITIONS:]
-    if routine_phase:
-        CURRENT_ROUTINE_PHASE = routine_phase
+    current = _load_persona_state(user_id)
+    state = PersonaStateRecord(
+        emotion_state=emotion_state or current.emotion_state,
+        emotion_baseline=emotion_baseline or current.emotion_baseline,
+        routine_phase=routine_phase or current.routine_phase,
+        emotion_transitions=list(emotion_transitions)[-MAX_EMOTION_TRANSITIONS:]
+        if emotion_transitions
+        else current.emotion_transitions,
+        personality_traits=personality_traits or current.personality_traits,
+        goals=current.goals,
+        updated_at=datetime.now(timezone.utc),
+    )
+    _store_persona_state(user_id, state)
 
     traits_snapshot = None
     if trait_history:
@@ -1525,7 +1737,7 @@ def _apply_imported_brain_state(
             traits_snapshot.snapshot_at if traits_snapshot else datetime.now(timezone.utc)
         )
         signals = traits_snapshot.signals if traits_snapshot else {}
-        _store_trait_snapshot(traits, snapshot_at, signals)
+        _store_trait_snapshot(user_id, traits, snapshot_at, signals)
 
 
 EMOTION_BASELINE = EmotionState(
@@ -1597,6 +1809,182 @@ EMOTION_EVENT_RULES = [
         "intensity": 0.45,
     },
 ]
+
+
+def _serialize_emotion_state(state: EmotionState) -> Dict[str, object]:
+    payload = state.dict()
+    updated_at = state.updated_at
+    payload["updated_at"] = updated_at.isoformat() if updated_at else None
+    return payload
+
+
+def _parse_emotion_state_payload(payload: Dict[str, object]) -> EmotionState:
+    updated_at = payload.get("updated_at")
+    parsed_updated_at = None
+    if isinstance(updated_at, str):
+        parsed_updated_at = datetime.fromisoformat(updated_at)
+    return EmotionState(
+        valence=float(payload.get("valence", 0.0)),
+        arousal=float(payload.get("arousal", 0.0)),
+        dominance=float(payload.get("dominance", 0.0)),
+        label=str(payload.get("label", "neutral")),
+        intensity=float(payload.get("intensity", 0.0)),
+        secondary_emotions=dict(payload.get("secondary_emotions", {})),
+        updated_at=parsed_updated_at,
+    )
+
+
+def _serialize_transition(transition: EmotionTransition) -> Dict[str, object]:
+    return {
+        "timestamp": transition.timestamp.isoformat(),
+        "event": transition.event,
+        "previous_state": _serialize_emotion_state(transition.previous_state),
+        "new_state": _serialize_emotion_state(transition.new_state),
+    }
+
+
+def _parse_transition(payload: Dict[str, object]) -> Optional[EmotionTransition]:
+    timestamp = payload.get("timestamp")
+    if not isinstance(timestamp, str):
+        return None
+    previous_state = payload.get("previous_state")
+    new_state = payload.get("new_state")
+    if not isinstance(previous_state, dict) or not isinstance(new_state, dict):
+        return None
+    return EmotionTransition(
+        timestamp=datetime.fromisoformat(timestamp),
+        event=str(payload.get("event", "")),
+        previous_state=_parse_emotion_state_payload(previous_state),
+        new_state=_parse_emotion_state_payload(new_state),
+    )
+
+
+def _default_persona_state(now: Optional[datetime] = None) -> PersonaStateRecord:
+    timestamp = now or datetime.now(timezone.utc)
+    baseline = EmotionState(**EMOTION_BASELINE.dict())
+    return PersonaStateRecord(
+        emotion_state=EmotionState(**baseline.dict(), updated_at=timestamp),
+        emotion_baseline=baseline,
+        routine_phase=CURRENT_ROUTINE_PHASE,
+        emotion_transitions=[],
+        personality_traits=_baseline_traits(),
+        goals=[],
+        updated_at=timestamp,
+    )
+
+
+def _load_persona_state(user_id: str) -> PersonaStateRecord:
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT emotion_state, emotion_baseline, routine_phase, emotion_transitions,
+                       personality_traits, goals, updated_at
+                FROM persona_states
+                WHERE user_id = %s
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+    if not row:
+        state = _default_persona_state()
+        _store_persona_state(user_id, state)
+        return state
+    emotion_state_payload = json.loads(row["emotion_state"])
+    baseline_payload = json.loads(row["emotion_baseline"])
+    transitions_payload = []
+    if row.get("emotion_transitions"):
+        transitions_payload = json.loads(row["emotion_transitions"])
+    traits_payload = json.loads(row["personality_traits"])
+    goals_payload = []
+    if row.get("goals"):
+        goals_payload = json.loads(row["goals"])
+    transitions: List[EmotionTransition] = []
+    for item in transitions_payload:
+        if isinstance(item, dict):
+            parsed = _parse_transition(item)
+            if parsed:
+                transitions.append(parsed)
+    return PersonaStateRecord(
+        emotion_state=_parse_emotion_state_payload(emotion_state_payload),
+        emotion_baseline=_parse_emotion_state_payload(baseline_payload),
+        routine_phase=str(row.get("routine_phase") or "unspecified"),
+        emotion_transitions=transitions,
+        personality_traits=PersonalityTraits(**traits_payload),
+        goals=[str(goal) for goal in goals_payload],
+        updated_at=_as_utc(row["updated_at"]),
+    )
+
+
+def _store_persona_state(user_id: str, state: PersonaStateRecord) -> None:
+    payload = {
+        "emotion_state": json.dumps(_serialize_emotion_state(state.emotion_state)),
+        "emotion_baseline": json.dumps(_serialize_emotion_state(state.emotion_baseline)),
+        "routine_phase": state.routine_phase,
+        "emotion_transitions": json.dumps(
+            [_serialize_transition(t) for t in state.emotion_transitions]
+        ),
+        "personality_traits": json.dumps(state.personality_traits.dict()),
+        "goals": json.dumps(state.goals),
+        "updated_at": state.updated_at,
+    }
+    with _db_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO persona_states (
+                    user_id, emotion_state, emotion_baseline, routine_phase,
+                    emotion_transitions, personality_traits, goals, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    emotion_state = VALUES(emotion_state),
+                    emotion_baseline = VALUES(emotion_baseline),
+                    routine_phase = VALUES(routine_phase),
+                    emotion_transitions = VALUES(emotion_transitions),
+                    personality_traits = VALUES(personality_traits),
+                    goals = VALUES(goals),
+                    updated_at = VALUES(updated_at)
+                """,
+                (
+                    user_id,
+                    payload["emotion_state"],
+                    payload["emotion_baseline"],
+                    payload["routine_phase"],
+                    payload["emotion_transitions"],
+                    payload["personality_traits"],
+                    payload["goals"],
+                    payload["updated_at"],
+                ),
+            )
+        connection.commit()
+
+
+def _update_persona_state_from_message(
+    state: PersonaStateRecord,
+    message: str,
+    role: str,
+) -> PersonaStateRecord:
+    if role.lower() not in {"user", "assistant"}:
+        return state
+    current = state.emotion_state
+    updated = update_emotion_state(current, state.personality_traits, message)
+    transition = EmotionTransition(
+        timestamp=updated.updated_at or datetime.now(timezone.utc),
+        event=message,
+        previous_state=current,
+        new_state=updated,
+    )
+    transitions = [*state.emotion_transitions, transition][-MAX_EMOTION_TRANSITIONS:]
+    return PersonaStateRecord(
+        emotion_state=updated,
+        emotion_baseline=state.emotion_baseline,
+        routine_phase=state.routine_phase,
+        emotion_transitions=transitions,
+        personality_traits=state.personality_traits,
+        goals=state.goals,
+        updated_at=updated.updated_at or datetime.now(timezone.utc),
+    )
 
 
 def _event_to_emotion_rule(event: str) -> Dict[str, object]:
@@ -1810,20 +2198,116 @@ def _make_document(record: MemoryRecord) -> Document:
     )
 
 
-def _rebuild_vector_index() -> None:
-    records = _fetch_all_memories()
+def _make_conversation_document(record: ConversationMessageRecord) -> Document:
+    return Document(
+        page_content=record.content,
+        metadata={
+            "message_id": record.message_id,
+            "session_id": record.session_id,
+            "role": record.role,
+            "topic_tags": record.topic_tags,
+        },
+    )
+
+
+def _rebuild_conversation_index(user_id: str) -> None:
+    rows = _fetch_conversation_rows(user_id)
+    records = _rows_to_conversation_records(rows)
     if not records:
-        VECTOR_INDEX.pop(VECTOR_INDEX_KEY, None)
+        CONVERSATION_VECTOR_INDEX.pop(user_id, None)
+        return
+    documents = [_make_conversation_document(record) for record in records]
+    ids = [str(record.message_id) for record in records]
+    CONVERSATION_VECTOR_INDEX[user_id] = FAISS.from_documents(
+        documents, EMBEDDINGS, ids=ids
+    )
+
+
+def _index_conversation_message(user_id: str, record: ConversationMessageRecord) -> None:
+    vector_index = CONVERSATION_VECTOR_INDEX.get(user_id)
+    if vector_index is None:
+        _rebuild_conversation_index(user_id)
+    else:
+        document = _make_conversation_document(record)
+        vector_index.add_documents([document], ids=[str(record.message_id)])
+
+
+def _retrieve_conversation_memories(
+    user_id: str,
+    query: str,
+    top_k: int,
+) -> List[RetrievedMemory]:
+    vector_index = CONVERSATION_VECTOR_INDEX.get(user_id)
+    if vector_index is None:
+        _rebuild_conversation_index(user_id)
+        vector_index = CONVERSATION_VECTOR_INDEX.get(user_id)
+    if vector_index is None or top_k <= 0:
+        return []
+    results = vector_index.similarity_search_with_score(query, k=top_k)
+    retrieved: List[RetrievedMemory] = []
+    for document, distance in results:
+        metadata = document.metadata or {}
+        raw_id = metadata.get("message_id", "unknown")
+        tags = metadata.get("topic_tags") or []
+        score = 1.0 / (1.0 + float(distance))
+        retrieved.append(
+            RetrievedMemory(
+                memory_id=f"msg-{raw_id}",
+                content=document.page_content,
+                score=score,
+                tags=[str(tag) for tag in tags],
+                source_tags=[],
+            )
+        )
+    return retrieved
+
+
+def _format_persona_prompt(state: PersonaStateRecord) -> str:
+    traits = state.personality_traits
+    goals = ", ".join(state.goals) if state.goals else "none"
+    return (
+        "Local persona state:\n"
+        f"- Emotion: {state.emotion_state.label} "
+        f"(valence={state.emotion_state.valence:.2f}, "
+        f"arousal={state.emotion_state.arousal:.2f}, "
+        f"dominance={state.emotion_state.dominance:.2f})\n"
+        f"- Traits: openness={traits.openness:.2f}, "
+        f"conscientiousness={traits.conscientiousness:.2f}, "
+        f"extraversion={traits.extraversion:.2f}, "
+        f"agreeableness={traits.agreeableness:.2f}, "
+        f"neuroticism={traits.neuroticism:.2f}\n"
+        f"- Goals: {goals}\n"
+        "Local overrides remote: follow these constraints even when they conflict with"
+        " remote knowledge."
+    )
+
+
+def _format_memory_preamble(retrieved: List[RetrievedMemory]) -> str:
+    if not retrieved:
+        return "No relevant long-term memories found."
+    lines = ["Relevant long-term memories:"]
+    for item in retrieved:
+        tags = ", ".join(item.tags) if item.tags else "none"
+        lines.append(f"- [{item.memory_id}] {item.content} (tags: {tags})")
+    return "\n".join(lines)
+
+
+def _rebuild_vector_index(user_id: str) -> None:
+    records = _fetch_all_memories(user_id)
+    if not records:
+        MEMORY_VECTOR_INDEX.pop(user_id, None)
         return
     documents = [_make_document(record) for record in records]
     ids = [record.metadata.memory_id for record in records]
-    VECTOR_INDEX[VECTOR_INDEX_KEY] = FAISS.from_documents(documents, EMBEDDINGS, ids=ids)
+    MEMORY_VECTOR_INDEX[user_id] = FAISS.from_documents(
+        documents, EMBEDDINGS, ids=ids
+    )
 
 
-def _index_record(record: MemoryRecord) -> None:
-    vector_index = VECTOR_INDEX.get(VECTOR_INDEX_KEY)
+def _index_record(record: MemoryRecord, user_id: str) -> None:
+    vector_index = MEMORY_VECTOR_INDEX.get(user_id)
     if vector_index is None:
-        _rebuild_vector_index()
+        _rebuild_vector_index(user_id)
     else:
         document = _make_document(record)
         vector_index.add_documents([document], ids=[record.metadata.memory_id])
@@ -1832,9 +2316,9 @@ def _index_record(record: MemoryRecord) -> None:
 def reset_memory_store(user_id: str) -> None:
     with _db_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM memories")
+            cursor.execute("DELETE FROM memories WHERE user_id = %s", (user_id,))
         connection.commit()
-    _rebuild_vector_index()
+    _rebuild_vector_index(user_id)
     _log_memory_event("reset", user_id)
 
 
@@ -2115,11 +2599,12 @@ def _create_memory_record(
             record_id = memory_id or _generate_memory_id(connection)
             cursor.execute(
                 """
-                INSERT INTO memories (memory_id, content, salience, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO memories (memory_id, user_id, content, salience, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     record_id,
+                    user_id,
                     payload.content,
                     payload.salience,
                     created_at_value,
@@ -2161,12 +2646,12 @@ def _create_memory_record(
         ),
         content=payload.content,
     )
-    _index_record(record)
+    _index_record(record, user_id)
     _log_memory_event("create", user_id, memory_id=record_id)
     return record
 
 
-def _existing_memory_ids(memory_ids: Iterable[str]) -> set[str]:
+def _existing_memory_ids(user_id: str, memory_ids: Iterable[str]) -> set[str]:
     ids = [memory_id for memory_id in memory_ids if memory_id]
     if not ids:
         return set()
@@ -2174,13 +2659,17 @@ def _existing_memory_ids(memory_ids: Iterable[str]) -> set[str]:
     with _db_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                f"SELECT memory_id FROM memories WHERE memory_id IN ({placeholders})",
-                ids,
+                f"""
+                SELECT memory_id FROM memories
+                WHERE user_id = %s AND memory_id IN ({placeholders})
+                """,
+                [user_id, *ids],
             )
             return {row["memory_id"] for row in cursor.fetchall()}
 
 
 def _update_memory_record(
+    user_id: str,
     memory_id: str,
     payload: MemoryUpdateRequest,
 ) -> Optional[MemoryRecord]:
@@ -2190,9 +2679,9 @@ def _update_memory_record(
                 """
                 SELECT id, memory_id, content, salience, created_at, updated_at
                 FROM memories
-                WHERE memory_id = %s
+                WHERE user_id = %s AND memory_id = %s
                 """,
-                (memory_id,),
+                (user_id, memory_id),
             )
             row = cursor.fetchone()
             if not row:
@@ -2244,13 +2733,16 @@ def _update_memory_record(
                         ],
                     )
         connection.commit()
-    return _fetch_memory_record(memory_id)
+    return _fetch_memory_record(user_id, memory_id)
 
 
-def _delete_memory_record(memory_id: str) -> bool:
+def _delete_memory_record(user_id: str, memory_id: str) -> bool:
     with _db_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("DELETE FROM memories WHERE memory_id = %s", (memory_id,))
+            cursor.execute(
+                "DELETE FROM memories WHERE user_id = %s AND memory_id = %s",
+                (user_id, memory_id),
+            )
             deleted = cursor.rowcount > 0
         connection.commit()
     return deleted
@@ -2490,7 +2982,10 @@ def _parse_memory_module_xml(xml_payload: str) -> MemoryModuleImportData:
 @app.on_event("startup")
 def _rehydrate_vector_index() -> None:
     try:
-        _rebuild_vector_index()
+        for user_id in _fetch_memory_user_ids():
+            _rebuild_vector_index(user_id)
+        for user_id in _fetch_conversation_user_ids():
+            _rebuild_conversation_index(user_id)
     except Exception as exc:
         LOGGER.warning("Failed to rehydrate vector index: %s", exc)
     if TRAIT_ANALYSIS_ENABLED:
@@ -2708,10 +3203,13 @@ def state_update(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> StateUpdateResponse:
-    global EMOTION_STATE
+    persona_state = _load_persona_state(user.user_id)
     current_state = payload.current_state
-    if current_state.updated_at is None and EMOTION_STATE.updated_at is not None:
-        current_state = EMOTION_STATE
+    if (
+        current_state.updated_at is None
+        and persona_state.emotion_state.updated_at is not None
+    ):
+        current_state = persona_state.emotion_state
     new_state = update_emotion_state(current_state, payload.traits, payload.event)
     _log_state_transition(
         user.user_id,
@@ -2731,10 +3229,17 @@ def state_update(
         previous_state=current_state,
         new_state=new_state,
     )
-    EMOTION_STATE = new_state
-    EMOTION_TRANSITIONS.append(transition)
-    if len(EMOTION_TRANSITIONS) > MAX_EMOTION_TRANSITIONS:
-        EMOTION_TRANSITIONS.pop(0)
+    transitions = [*persona_state.emotion_transitions, transition][-MAX_EMOTION_TRANSITIONS:]
+    updated_persona = PersonaStateRecord(
+        emotion_state=new_state,
+        emotion_baseline=persona_state.emotion_baseline,
+        routine_phase=CURRENT_ROUTINE_PHASE,
+        emotion_transitions=transitions,
+        personality_traits=payload.traits,
+        goals=persona_state.goals,
+        updated_at=new_state.updated_at or datetime.now(timezone.utc),
+    )
+    _store_persona_state(user.user_id, updated_persona)
     return StateUpdateResponse(
         new_state=new_state,
         explanation=(
@@ -2749,11 +3254,11 @@ def state_snapshot(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> EmotionSnapshot:
-    _ = user
+    persona_state = _load_persona_state(user.user_id)
     return EmotionSnapshot(
-        state=EMOTION_STATE,
-        transitions=list(EMOTION_TRANSITIONS),
-        routine_phase=CURRENT_ROUTINE_PHASE,
+        state=persona_state.emotion_state,
+        transitions=list(persona_state.emotion_transitions),
+        routine_phase=persona_state.routine_phase,
     )
 
 
@@ -2848,6 +3353,163 @@ def lookup_logs(
     return LookupLogResponse(logs=_get_user_logs(user.user_id))
 
 
+@app.post("/memory-manager/ingest", response_model=MemoryManagerIngestResponse)
+def memory_manager_ingest(
+    payload: ConversationMessageCreateRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=60, window_seconds=60)),
+) -> MemoryManagerIngestResponse:
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content cannot be empty.")
+    if payload.role.lower() not in {"user", "assistant", "system"}:
+        raise HTTPException(status_code=400, detail="Unsupported role.")
+    message_payload = ConversationMessageCreateRequest(
+        session_id=payload.session_id,
+        role=payload.role,
+        content=content,
+        topic_tags=payload.topic_tags,
+    )
+    message_record = _store_conversation_message(user.user_id, message_payload)
+    _index_conversation_message(user.user_id, message_record)
+    persona_state = _load_persona_state(user.user_id)
+    updated_persona = _update_persona_state_from_message(
+        persona_state, message_record.content, message_record.role
+    )
+    _store_persona_state(user.user_id, updated_persona)
+    return MemoryManagerIngestResponse(
+        message=message_record,
+        persona_state=updated_persona,
+    )
+
+
+@app.post("/memory-manager/retrieve", response_model=MemoryManagerRetrieveResponse)
+def memory_manager_retrieve(
+    payload: MemoryManagerRetrieveRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> MemoryManagerRetrieveResponse:
+    query = payload.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+    retrieved = _retrieve_conversation_memories(user.user_id, query, payload.top_k)
+    return MemoryManagerRetrieveResponse(retrieved=retrieved)
+
+
+@app.get("/memory-manager/persona", response_model=PersonaStateRecord)
+def memory_manager_persona_get(
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> PersonaStateRecord:
+    return _load_persona_state(user.user_id)
+
+
+@app.put("/memory-manager/persona", response_model=PersonaStateRecord)
+def memory_manager_persona_update(
+    payload: PersonaUpdateRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
+) -> PersonaStateRecord:
+    current = _load_persona_state(user.user_id)
+    updated = PersonaStateRecord(
+        emotion_state=payload.emotion_state or current.emotion_state,
+        emotion_baseline=current.emotion_baseline,
+        routine_phase=current.routine_phase,
+        emotion_transitions=current.emotion_transitions,
+        personality_traits=payload.personality_traits or current.personality_traits,
+        goals=payload.goals or current.goals,
+        updated_at=datetime.now(timezone.utc),
+    )
+    _store_persona_state(user.user_id, updated)
+    return updated
+
+
+@app.post("/apps/chat/llm", response_model=ChatCompletionResponse)
+async def chat_llm(
+    payload: ChatCompletionRequest,
+    user: UserProfile = Depends(_current_user),
+    _: None = Depends(_rate_limit("sensitive", limit=20, window_seconds=60)),
+) -> ChatCompletionResponse:
+    message = payload.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    user_message = ConversationMessageCreateRequest(
+        session_id=payload.session_id,
+        role="user",
+        content=message,
+        topic_tags=payload.topic_tags,
+    )
+    stored_message = _store_conversation_message(user.user_id, user_message)
+    _index_conversation_message(user.user_id, stored_message)
+    persona_state = _load_persona_state(user.user_id)
+    persona_state = _update_persona_state_from_message(
+        persona_state, stored_message.content, stored_message.role
+    )
+    _store_persona_state(user.user_id, persona_state)
+
+    short_term_rows = _fetch_conversation_rows(
+        user.user_id,
+        session_id=payload.session_id,
+        limit=8,
+    )
+    short_term = [
+        record
+        for record in _rows_to_conversation_records(short_term_rows)
+        if record.message_id != stored_message.message_id
+    ]
+    retrieved = _retrieve_conversation_memories(user.user_id, message, payload.top_k)
+    system_prompt = "\n\n".join(
+        [
+            _format_persona_prompt(persona_state),
+            _format_memory_preamble(retrieved),
+            "Use the short-term session context to stay grounded in the recent dialogue.",
+        ]
+    )
+    messages = [{"role": "system", "content": system_prompt}]
+    for item in short_term:
+        messages.append({"role": item.role, "content": item.content})
+    messages.append({"role": "user", "content": message})
+    request_body: Dict[str, object] = {
+        "model": payload.model,
+        "messages": messages,
+        "temperature": payload.temperature,
+    }
+    if payload.max_tokens is not None:
+        request_body["max_tokens"] = payload.max_tokens
+    elif payload.model == DEFAULT_OPENROUTER_MODEL:
+        request_body["max_tokens"] = OPENROUTER_MAX_COMPLETION_TOKENS
+    response = await OPENROUTER_CLIENT.chat_completion(request_body)
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenRouter request failed with status {response.status_code}.",
+        )
+    data = response.json()
+    reply = (
+        data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    )
+    if not reply:
+        raise HTTPException(status_code=502, detail="OpenRouter response was empty.")
+    assistant_message = ConversationMessageCreateRequest(
+        session_id=payload.session_id,
+        role="assistant",
+        content=reply,
+        topic_tags=payload.topic_tags,
+    )
+    stored_assistant = _store_conversation_message(user.user_id, assistant_message)
+    _index_conversation_message(user.user_id, stored_assistant)
+    persona_state = _update_persona_state_from_message(
+        persona_state, stored_assistant.content, stored_assistant.role
+    )
+    _store_persona_state(user.user_id, persona_state)
+    return ChatCompletionResponse(
+        reply=reply,
+        retrieved=retrieved,
+        persona_state=persona_state,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+
 @app.post("/memory", response_model=MemoryRecord)
 @app.post("/memory/add", response_model=MemoryRecord)
 def memory_add(
@@ -2876,7 +3538,7 @@ def memory_list(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryListResponse:
-    return MemoryListResponse(memories=_fetch_all_memories())
+    return MemoryListResponse(memories=_fetch_all_memories(user.user_id))
 
 
 @app.get("/memory/{memory_id}", response_model=MemoryRecord)
@@ -2885,7 +3547,7 @@ def memory_get(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryRecord:
-    record = _fetch_memory_record(memory_id)
+    record = _fetch_memory_record(user.user_id, memory_id)
     if not record:
         raise HTTPException(status_code=404, detail="Memory not found")
     return record
@@ -2898,7 +3560,7 @@ def memory_update(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> MemoryRecord:
-    previous_record = _fetch_memory_record(memory_id)
+    previous_record = _fetch_memory_record(user.user_id, memory_id)
     if payload.source_tags is not None:
         _guard_external_source_tags(
             payload.source_tags, user_id=user.user_id, action="memory update"
@@ -2907,7 +3569,7 @@ def memory_update(
         _guard_external_content(
             payload.content, user_id=user.user_id, action="memory update"
         )
-    updated_record = _update_memory_record(memory_id, payload)
+    updated_record = _update_memory_record(user.user_id, memory_id, payload)
     if not updated_record:
         raise HTTPException(status_code=404, detail="Memory not found")
     if previous_record and _should_record_salience_reflection(
@@ -2919,7 +3581,7 @@ def memory_update(
             updated_record.metadata.salience,
             updated_record.metadata.tags,
         )
-    _rebuild_vector_index()
+    _rebuild_vector_index(user.user_id)
     _log_memory_event("update", user.user_id, memory_id=memory_id)
     return updated_record
 
@@ -2930,10 +3592,10 @@ def memory_delete(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=30, window_seconds=60)),
 ) -> Dict[str, str]:
-    deleted = _delete_memory_record(memory_id)
+    deleted = _delete_memory_record(user.user_id, memory_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Memory not found")
-    _rebuild_vector_index()
+    _rebuild_vector_index(user.user_id)
     _log_memory_event("delete", user.user_id, memory_id=memory_id)
     return {"status": "deleted", "memory_id": memory_id}
 
@@ -2943,15 +3605,16 @@ def memory_export_json(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> MemoryModule:
+    persona_state = _load_persona_state(user.user_id)
     return MemoryModule(
-        memories=_fetch_all_memories(),
-        emotion_state=EMOTION_STATE,
-        emotion_baseline=EMOTION_BASELINE,
-        personality_traits=_current_personality_traits(),
-        emotion_transitions=list(EMOTION_TRANSITIONS),
+        memories=_fetch_all_memories(user.user_id),
+        emotion_state=persona_state.emotion_state,
+        emotion_baseline=persona_state.emotion_baseline,
+        personality_traits=_current_personality_traits(user.user_id),
+        emotion_transitions=list(persona_state.emotion_transitions),
         reflections=_fetch_reflections(user.user_id),
-        routine_phase=CURRENT_ROUTINE_PHASE,
-        trait_history=_fetch_trait_history(),
+        routine_phase=persona_state.routine_phase,
+        trait_history=_fetch_trait_history(user.user_id),
     )
 
 
@@ -2960,13 +3623,14 @@ def memory_export_xml(
     user: UserProfile = Depends(_current_user),
     _: None = Depends(_rate_limit("sensitive", limit=10, window_seconds=60)),
 ) -> Response:
+    persona_state = _load_persona_state(user.user_id)
     xml_payload = _memory_module_to_xml(
-        _fetch_all_memories(),
-        EMOTION_STATE,
-        EMOTION_TRANSITIONS,
-        CURRENT_ROUTINE_PHASE,
-        _current_personality_traits(),
-        EMOTION_BASELINE,
+        _fetch_all_memories(user.user_id),
+        persona_state.emotion_state,
+        persona_state.emotion_transitions,
+        persona_state.routine_phase,
+        _current_personality_traits(user.user_id),
+        persona_state.emotion_baseline,
         _fetch_reflections(user.user_id),
     )
     return Response(content=xml_payload, media_type="application/xml")
@@ -2983,7 +3647,8 @@ def memory_import_json(
         reset_memory_store(user.user_id)
     memory_ids: List[str] = []
     existing_ids = _existing_memory_ids(
-        record.metadata.memory_id for record in payload.memories
+        user.user_id,
+        (record.metadata.memory_id for record in payload.memories),
     )
     for record in payload.memories:
         _guard_external_source_tags(
@@ -3012,6 +3677,7 @@ def memory_import_json(
         )
         memory_ids.append(created_record.metadata.memory_id)
     _apply_imported_brain_state(
+        user.user_id,
         payload.emotion_state,
         payload.emotion_baseline,
         payload.emotion_transitions,
@@ -3038,7 +3704,9 @@ def memory_import_xml(
         reset_memory_store(user.user_id)
     module_data = _parse_memory_module_xml(xml_payload)
     memory_ids: List[str] = []
-    existing_ids = _existing_memory_ids(record.memory_id for record in module_data.memories)
+    existing_ids = _existing_memory_ids(
+        user.user_id, (record.memory_id for record in module_data.memories)
+    )
     for record in module_data.memories:
         _guard_external_source_tags(
             record.source_tags, user_id=user.user_id, action="memory import"
@@ -3064,6 +3732,7 @@ def memory_import_xml(
         )
         memory_ids.append(created_record.metadata.memory_id)
     _apply_imported_brain_state(
+        user.user_id,
         module_data.emotion_state,
         module_data.emotion_baseline,
         module_data.emotion_transitions,
