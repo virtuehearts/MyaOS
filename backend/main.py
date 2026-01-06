@@ -121,6 +121,16 @@ class EmotionState(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class LocalState(BaseModel):
+    mood: float = Field(..., ge=0.0, le=1.0)
+    energy: float = Field(..., ge=0.0, le=1.0)
+    social: float = Field(..., ge=0.0, le=1.0)
+    stress: float = Field(..., ge=0.0, le=1.0)
+    curiosity: float = Field(..., ge=0.0, le=1.0)
+    affection: float = Field(..., ge=0.0, le=1.0)
+    updated_at: Optional[datetime] = None
+
+
 class EmotionTransition(BaseModel):
     timestamp: datetime
     event: str
@@ -200,6 +210,7 @@ class MemoryModule(BaseModel):
     emotion_baseline: EmotionState
     personality_traits: PersonalityTraits
     emotion_transitions: List[EmotionTransition]
+    local_state: LocalState
     reflections: List["ReflectionRecord"] = Field(default_factory=list)
     routine_phase: str = "unspecified"
     trait_history: List[PersonalityTraitSnapshot] = Field(default_factory=list)
@@ -211,6 +222,7 @@ class PersonaStateRecord(BaseModel):
     routine_phase: str = "unspecified"
     emotion_transitions: List[EmotionTransition] = Field(default_factory=list)
     personality_traits: PersonalityTraits
+    local_state: LocalState
     goals: List[str] = Field(default_factory=list)
     updated_at: datetime
 
@@ -261,6 +273,8 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = 0.4
     max_tokens: Optional[int] = None
     top_k: int = 5
+    allow_local_response: bool = True
+    local_response_max_length: int = Field(default=120, ge=20, le=500)
 
 
 class ChatCompletionResponse(BaseModel):
@@ -268,12 +282,14 @@ class ChatCompletionResponse(BaseModel):
     retrieved: List[RetrievedMemory]
     persona_state: PersonaStateRecord
     timestamp: datetime
+    used_local_response: bool = False
 
 
 class PersonaUpdateRequest(BaseModel):
     goals: Optional[List[str]] = None
     personality_traits: Optional[PersonalityTraits] = None
     emotion_state: Optional[EmotionState] = None
+    local_state: Optional[LocalState] = None
 
 
 class MemoryImportRecord(BaseModel):
@@ -294,6 +310,7 @@ class MemoryImportRequest(BaseModel):
     personality_traits: Optional[PersonalityTraits] = None
     emotion_transitions: List[EmotionTransition] = Field(default_factory=list)
     routine_phase: Optional[str] = None
+    local_state: Optional[LocalState] = None
     trait_history: List[PersonalityTraitSnapshot] = Field(default_factory=list)
 
 
@@ -304,6 +321,7 @@ class MemoryModuleImportData(BaseModel):
     personality_traits: Optional[PersonalityTraits] = None
     emotion_transitions: List[EmotionTransition] = Field(default_factory=list)
     routine_phase: Optional[str] = None
+    local_state: Optional[LocalState] = None
 
 
 class ReflectionRecord(BaseModel):
@@ -1187,6 +1205,17 @@ def _baseline_traits() -> PersonalityTraits:
     )
 
 
+def _baseline_local_state() -> LocalState:
+    return LocalState(
+        mood=0.5,
+        energy=0.55,
+        social=0.5,
+        stress=0.35,
+        curiosity=0.6,
+        affection=0.5,
+    )
+
+
 def _fetch_latest_trait_snapshot(user_id: str) -> Optional[PersonalityTraitSnapshot]:
     with _db_connection() as connection:
         with connection.cursor() as cursor:
@@ -1712,6 +1741,7 @@ def _apply_imported_brain_state(
     emotion_transitions: Sequence[EmotionTransition],
     routine_phase: Optional[str],
     personality_traits: Optional[PersonalityTraits],
+    local_state: Optional[LocalState],
     trait_history: Sequence[PersonalityTraitSnapshot],
 ) -> None:
     current = _load_persona_state(user_id)
@@ -1723,6 +1753,7 @@ def _apply_imported_brain_state(
         if emotion_transitions
         else current.emotion_transitions,
         personality_traits=personality_traits or current.personality_traits,
+        local_state=local_state or current.local_state,
         goals=current.goals,
         updated_at=datetime.now(timezone.utc),
     )
@@ -1758,6 +1789,8 @@ EMOTION_STATE = EmotionState(
 )
 EMOTION_TRANSITIONS: List[EmotionTransition] = []
 CURRENT_ROUTINE_PHASE = "unspecified"
+LOCAL_STATE_BASELINE = _baseline_local_state()
+LOCAL_STATE_DECAY_HALF_LIFE_SECONDS = 600.0
 
 EMOTION_EVENT_RULES = [
     {
@@ -1834,6 +1867,29 @@ def _parse_emotion_state_payload(payload: Dict[str, object]) -> EmotionState:
     )
 
 
+def _serialize_local_state(state: LocalState) -> Dict[str, object]:
+    payload = state.dict()
+    updated_at = state.updated_at
+    payload["updated_at"] = updated_at.isoformat() if updated_at else None
+    return payload
+
+
+def _parse_local_state_payload(payload: Dict[str, object]) -> LocalState:
+    updated_at = payload.get("updated_at")
+    parsed_updated_at = None
+    if isinstance(updated_at, str):
+        parsed_updated_at = datetime.fromisoformat(updated_at)
+    return LocalState(
+        mood=float(payload.get("mood", 0.5)),
+        energy=float(payload.get("energy", 0.5)),
+        social=float(payload.get("social", 0.5)),
+        stress=float(payload.get("stress", 0.5)),
+        curiosity=float(payload.get("curiosity", 0.5)),
+        affection=float(payload.get("affection", 0.5)),
+        updated_at=parsed_updated_at,
+    )
+
+
 def _serialize_transition(transition: EmotionTransition) -> Dict[str, object]:
     return {
         "timestamp": transition.timestamp.isoformat(),
@@ -1868,6 +1924,7 @@ def _default_persona_state(now: Optional[datetime] = None) -> PersonaStateRecord
         routine_phase=CURRENT_ROUTINE_PHASE,
         emotion_transitions=[],
         personality_traits=_baseline_traits(),
+        local_state=LocalState(**_baseline_local_state().dict(), updated_at=timestamp),
         goals=[],
         updated_at=timestamp,
     )
@@ -1879,7 +1936,7 @@ def _load_persona_state(user_id: str) -> PersonaStateRecord:
             cursor.execute(
                 """
                 SELECT emotion_state, emotion_baseline, routine_phase, emotion_transitions,
-                       personality_traits, goals, updated_at
+                       personality_traits, local_state, goals, updated_at
                 FROM persona_states
                 WHERE user_id = %s
                 """,
@@ -1896,6 +1953,9 @@ def _load_persona_state(user_id: str) -> PersonaStateRecord:
     if row.get("emotion_transitions"):
         transitions_payload = json.loads(row["emotion_transitions"])
     traits_payload = json.loads(row["personality_traits"])
+    local_state_payload: Dict[str, object] = {}
+    if row.get("local_state"):
+        local_state_payload = json.loads(row["local_state"])
     goals_payload = []
     if row.get("goals"):
         goals_payload = json.loads(row["goals"])
@@ -1911,6 +1971,9 @@ def _load_persona_state(user_id: str) -> PersonaStateRecord:
         routine_phase=str(row.get("routine_phase") or "unspecified"),
         emotion_transitions=transitions,
         personality_traits=PersonalityTraits(**traits_payload),
+        local_state=_parse_local_state_payload(local_state_payload)
+        if local_state_payload
+        else LocalState(**_baseline_local_state().dict()),
         goals=[str(goal) for goal in goals_payload],
         updated_at=_as_utc(row["updated_at"]),
     )
@@ -1925,6 +1988,7 @@ def _store_persona_state(user_id: str, state: PersonaStateRecord) -> None:
             [_serialize_transition(t) for t in state.emotion_transitions]
         ),
         "personality_traits": json.dumps(state.personality_traits.dict()),
+        "local_state": json.dumps(_serialize_local_state(state.local_state)),
         "goals": json.dumps(state.goals),
         "updated_at": state.updated_at,
     }
@@ -1934,15 +1998,16 @@ def _store_persona_state(user_id: str, state: PersonaStateRecord) -> None:
                 """
                 INSERT INTO persona_states (
                     user_id, emotion_state, emotion_baseline, routine_phase,
-                    emotion_transitions, personality_traits, goals, updated_at
+                    emotion_transitions, personality_traits, local_state, goals, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     emotion_state = VALUES(emotion_state),
                     emotion_baseline = VALUES(emotion_baseline),
                     routine_phase = VALUES(routine_phase),
                     emotion_transitions = VALUES(emotion_transitions),
                     personality_traits = VALUES(personality_traits),
+                    local_state = VALUES(local_state),
                     goals = VALUES(goals),
                     updated_at = VALUES(updated_at)
                 """,
@@ -1953,6 +2018,7 @@ def _store_persona_state(user_id: str, state: PersonaStateRecord) -> None:
                     payload["routine_phase"],
                     payload["emotion_transitions"],
                     payload["personality_traits"],
+                    payload["local_state"],
                     payload["goals"],
                     payload["updated_at"],
                 ),
@@ -1969,6 +2035,7 @@ def _update_persona_state_from_message(
         return state
     current = state.emotion_state
     updated = update_emotion_state(current, state.personality_traits, message)
+    local_state = update_local_state(state.local_state, message, role)
     transition = EmotionTransition(
         timestamp=updated.updated_at or datetime.now(timezone.utc),
         event=message,
@@ -1982,6 +2049,7 @@ def _update_persona_state_from_message(
         routine_phase=state.routine_phase,
         emotion_transitions=transitions,
         personality_traits=state.personality_traits,
+        local_state=local_state,
         goals=state.goals,
         updated_at=updated.updated_at or datetime.now(timezone.utc),
     )
@@ -2041,6 +2109,86 @@ def _apply_emotion_decay(state: EmotionState, now: datetime) -> EmotionState:
         intensity=decayed_intensity,
         secondary_emotions=decayed_secondary,
         updated_at=state.updated_at,
+    )
+
+
+def _apply_local_state_decay(state: LocalState, now: datetime) -> LocalState:
+    if state.updated_at is None:
+        return state
+    elapsed = max(0.0, (now - state.updated_at).total_seconds())
+    if elapsed <= 0.0:
+        return state
+    decay_factor = 0.5 ** (elapsed / LOCAL_STATE_DECAY_HALF_LIFE_SECONDS)
+    baseline = LOCAL_STATE_BASELINE
+    return LocalState(
+        mood=_clamp(baseline.mood + (state.mood - baseline.mood) * decay_factor),
+        energy=_clamp(baseline.energy + (state.energy - baseline.energy) * decay_factor),
+        social=_clamp(baseline.social + (state.social - baseline.social) * decay_factor),
+        stress=_clamp(baseline.stress + (state.stress - baseline.stress) * decay_factor),
+        curiosity=_clamp(
+            baseline.curiosity + (state.curiosity - baseline.curiosity) * decay_factor
+        ),
+        affection=_clamp(
+            baseline.affection + (state.affection - baseline.affection) * decay_factor
+        ),
+        updated_at=state.updated_at,
+    )
+
+
+def _contains_any(message: str, keywords: Iterable[str]) -> bool:
+    lowered = message.lower()
+    return any(keyword in lowered for keyword in keywords)
+
+
+def update_local_state(
+    state: LocalState,
+    message: str,
+    role: str,
+    now: Optional[datetime] = None,
+) -> LocalState:
+    current_time = now or datetime.now(timezone.utc)
+    decayed = _apply_local_state_decay(state, current_time)
+    multiplier = 1.0 if role.lower() == "user" else 0.6
+    deltas = {
+        "mood": 0.0,
+        "energy": 0.0,
+        "social": 0.0,
+        "stress": 0.0,
+        "curiosity": 0.0,
+        "affection": 0.0,
+    }
+    if _contains_any(message, ("thank", "appreciate", "grateful", "love")):
+        deltas["mood"] += 0.06
+        deltas["stress"] -= 0.04
+        deltas["affection"] += 0.08
+    if _contains_any(message, ("happy", "excited", "great", "awesome", "good")):
+        deltas["mood"] += 0.05
+        deltas["energy"] += 0.04
+    if _contains_any(message, ("sad", "down", "upset", "angry", "frustrated")):
+        deltas["mood"] -= 0.08
+        deltas["stress"] += 0.08
+    if _contains_any(message, ("tired", "exhausted", "sleepy", "burnt")):
+        deltas["energy"] -= 0.08
+        deltas["stress"] += 0.05
+    if _contains_any(message, ("curious", "wonder", "learn", "explore", "?")):
+        deltas["curiosity"] += 0.06
+    if _contains_any(message, ("chat", "talk", "together", "friend", "team")):
+        deltas["social"] += 0.05
+        deltas["affection"] += 0.03
+    if _contains_any(message, ("alone", "busy", "later", "stop", "leave me")):
+        deltas["social"] -= 0.06
+    if _contains_any(message, ("urgent", "panic", "stress", "overwhelmed")):
+        deltas["stress"] += 0.1
+        deltas["energy"] -= 0.03
+
+    return LocalState(
+        mood=_clamp(decayed.mood + deltas["mood"] * multiplier),
+        energy=_clamp(decayed.energy + deltas["energy"] * multiplier),
+        social=_clamp(decayed.social + deltas["social"] * multiplier),
+        stress=_clamp(decayed.stress + deltas["stress"] * multiplier),
+        curiosity=_clamp(decayed.curiosity + deltas["curiosity"] * multiplier),
+        affection=_clamp(decayed.affection + deltas["affection"] * multiplier),
+        updated_at=current_time,
     )
 
 
@@ -2262,15 +2410,58 @@ def _retrieve_conversation_memories(
     return retrieved
 
 
+def _local_state_tone(state: LocalState) -> str:
+    if state.stress >= 0.7:
+        return "calming, reassuring, and steady"
+    if state.energy <= 0.4:
+        return "gentle, concise, and grounded"
+    if state.mood >= 0.65:
+        return "upbeat, warm, and encouraging"
+    return "balanced, clear, and supportive"
+
+
+def _local_state_motivations(state: LocalState) -> str:
+    motivations = {
+        "curiosity": state.curiosity,
+        "connection": state.social,
+        "care": state.affection,
+        "momentum": state.energy,
+    }
+    ranked = sorted(motivations.items(), key=lambda item: item[1], reverse=True)[:2]
+    return ", ".join(name for name, _ in ranked) if ranked else "stability"
+
+
+def _local_state_constraints(state: LocalState) -> str:
+    constraints: List[str] = []
+    if state.stress >= 0.7:
+        constraints.append("Reduce cognitive load; be calming and step-by-step.")
+    if state.energy <= 0.4:
+        constraints.append("Keep responses short and avoid heavy detail.")
+    if state.social <= 0.4:
+        constraints.append("Avoid pushy tone; offer opt-in choices.")
+    if not constraints:
+        constraints.append("Keep responses balanced and aligned with goals.")
+    return " ".join(constraints)
+
+
 def _format_persona_prompt(state: PersonaStateRecord) -> str:
     traits = state.personality_traits
     goals = ", ".join(state.goals) if state.goals else "none"
+    local_state = state.local_state
+    motivations = _local_state_motivations(local_state)
+    constraints = _local_state_constraints(local_state)
     return (
         "Local persona state:\n"
         f"- Emotion: {state.emotion_state.label} "
         f"(valence={state.emotion_state.valence:.2f}, "
         f"arousal={state.emotion_state.arousal:.2f}, "
         f"dominance={state.emotion_state.dominance:.2f})\n"
+        f"- Local state: mood={local_state.mood:.2f}, energy={local_state.energy:.2f}, "
+        f"social={local_state.social:.2f}, stress={local_state.stress:.2f}, "
+        f"curiosity={local_state.curiosity:.2f}, affection={local_state.affection:.2f}\n"
+        f"- Emotional tone: {_local_state_tone(local_state)}\n"
+        f"- Motivations: {motivations}\n"
+        f"- Constraints: {constraints}\n"
         f"- Traits: openness={traits.openness:.2f}, "
         f"conscientiousness={traits.conscientiousness:.2f}, "
         f"extraversion={traits.extraversion:.2f}, "
@@ -2584,6 +2775,24 @@ def generate_local_response(payload: LocalResponseRequest) -> LocalResponseRespo
     )
 
 
+def _should_use_local_response(message: str, max_length: int) -> bool:
+    cleaned = message.strip()
+    if not cleaned or len(cleaned) > max_length:
+        return False
+    if "\n" in cleaned:
+        return False
+    word_count = len(re.findall(r"\w+", cleaned))
+    if word_count > 16:
+        return False
+    if re.search(
+        r"\b(explain|design|implement|code|debug|error|fix|plan|why|how|analyze)\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    return True
+
+
 def _create_memory_record(
     user_id: str,
     payload: MemoryCreateRequest,
@@ -2763,6 +2972,19 @@ def _emotion_state_to_xml(parent: ET.Element, tag: str, state: EmotionState) -> 
     return emotion_el
 
 
+def _local_state_to_xml(parent: ET.Element, state: LocalState) -> ET.Element:
+    local_el = ET.SubElement(parent, "local_state")
+    ET.SubElement(local_el, "mood").text = str(state.mood)
+    ET.SubElement(local_el, "energy").text = str(state.energy)
+    ET.SubElement(local_el, "social").text = str(state.social)
+    ET.SubElement(local_el, "stress").text = str(state.stress)
+    ET.SubElement(local_el, "curiosity").text = str(state.curiosity)
+    ET.SubElement(local_el, "affection").text = str(state.affection)
+    if state.updated_at:
+        ET.SubElement(local_el, "updated_at").text = state.updated_at.isoformat()
+    return local_el
+
+
 def _personality_traits_to_xml(parent: ET.Element, traits: PersonalityTraits) -> None:
     traits_el = ET.SubElement(parent, "personality_traits")
     ET.SubElement(traits_el, "openness").text = str(traits.openness)
@@ -2779,12 +3001,14 @@ def _memory_module_to_xml(
     routine_phase: str,
     personality_traits: PersonalityTraits,
     emotion_baseline: EmotionState,
+    local_state: LocalState,
     reflections: Sequence[ReflectionRecord],
 ) -> str:
     root = ET.Element("memory_module")
     ET.SubElement(root, "routine_phase").text = routine_phase
     _emotion_state_to_xml(root, "emotion_state", emotion_state)
     _emotion_state_to_xml(root, "emotion_baseline", emotion_baseline)
+    _local_state_to_xml(root, local_state)
     _personality_traits_to_xml(root, personality_traits)
     transitions_el = ET.SubElement(root, "emotion_transitions")
     for transition in emotion_transitions:
@@ -2858,6 +3082,46 @@ def _parse_emotion_state_element(element: Optional[ET.Element]) -> Optional[Emot
         label=label_el.text,
         intensity=float(intensity_el.text),
         secondary_emotions=secondary,
+        updated_at=(
+            datetime.fromisoformat(updated_el.text)
+            if updated_el is not None and updated_el.text
+            else None
+        ),
+    )
+
+
+def _parse_local_state_element(element: Optional[ET.Element]) -> Optional[LocalState]:
+    if element is None:
+        return None
+    mood_el = element.find("mood")
+    energy_el = element.find("energy")
+    social_el = element.find("social")
+    stress_el = element.find("stress")
+    curiosity_el = element.find("curiosity")
+    affection_el = element.find("affection")
+    if (
+        mood_el is None
+        or energy_el is None
+        or social_el is None
+        or stress_el is None
+        or curiosity_el is None
+        or affection_el is None
+        or mood_el.text is None
+        or energy_el.text is None
+        or social_el.text is None
+        or stress_el.text is None
+        or curiosity_el.text is None
+        or affection_el.text is None
+    ):
+        return None
+    updated_el = element.find("updated_at")
+    return LocalState(
+        mood=float(mood_el.text),
+        energy=float(energy_el.text),
+        social=float(social_el.text),
+        stress=float(stress_el.text),
+        curiosity=float(curiosity_el.text),
+        affection=float(affection_el.text),
         updated_at=(
             datetime.fromisoformat(updated_el.text)
             if updated_el is not None and updated_el.text
@@ -2943,6 +3207,7 @@ def _parse_memory_module_xml(xml_payload: str) -> MemoryModuleImportData:
         )
     emotion_state = _parse_emotion_state_element(root.find("emotion_state"))
     emotion_baseline = _parse_emotion_state_element(root.find("emotion_baseline"))
+    local_state = _parse_local_state_element(root.find("local_state"))
     personality_traits = _parse_personality_traits_element(root.find("personality_traits"))
     routine_phase_el = root.find("routine_phase")
     routine_phase = routine_phase_el.text if routine_phase_el is not None else None
@@ -2976,6 +3241,7 @@ def _parse_memory_module_xml(xml_payload: str) -> MemoryModuleImportData:
         personality_traits=personality_traits,
         emotion_transitions=transitions,
         routine_phase=routine_phase,
+        local_state=local_state,
     )
 
 
@@ -3211,6 +3477,12 @@ def state_update(
     ):
         current_state = persona_state.emotion_state
     new_state = update_emotion_state(current_state, payload.traits, payload.event)
+    updated_local_state = update_local_state(
+        persona_state.local_state,
+        payload.event,
+        "user",
+        now=new_state.updated_at or datetime.now(timezone.utc),
+    )
     _log_state_transition(
         user.user_id,
         payload.event,
@@ -3236,6 +3508,7 @@ def state_update(
         routine_phase=CURRENT_ROUTINE_PHASE,
         emotion_transitions=transitions,
         personality_traits=payload.traits,
+        local_state=updated_local_state,
         goals=persona_state.goals,
         updated_at=new_state.updated_at or datetime.now(timezone.utc),
     )
@@ -3417,6 +3690,7 @@ def memory_manager_persona_update(
         routine_phase=current.routine_phase,
         emotion_transitions=current.emotion_transitions,
         personality_traits=payload.personality_traits or current.personality_traits,
+        local_state=payload.local_state or current.local_state,
         goals=payload.goals or current.goals,
         updated_at=datetime.now(timezone.utc),
     )
@@ -3446,50 +3720,58 @@ async def chat_llm(
         persona_state, stored_message.content, stored_message.role
     )
     _store_persona_state(user.user_id, persona_state)
-
-    short_term_rows = _fetch_conversation_rows(
-        user.user_id,
-        session_id=payload.session_id,
-        limit=8,
+    use_local_response = payload.allow_local_response and _should_use_local_response(
+        message, payload.local_response_max_length
     )
-    short_term = [
-        record
-        for record in _rows_to_conversation_records(short_term_rows)
-        if record.message_id != stored_message.message_id
-    ]
-    retrieved = _retrieve_conversation_memories(user.user_id, message, payload.top_k)
-    system_prompt = "\n\n".join(
-        [
-            _format_persona_prompt(persona_state),
-            _format_memory_preamble(retrieved),
-            "Use the short-term session context to stay grounded in the recent dialogue.",
-        ]
-    )
-    messages = [{"role": "system", "content": system_prompt}]
-    for item in short_term:
-        messages.append({"role": item.role, "content": item.content})
-    messages.append({"role": "user", "content": message})
-    request_body: Dict[str, object] = {
-        "model": payload.model,
-        "messages": messages,
-        "temperature": payload.temperature,
-    }
-    if payload.max_tokens is not None:
-        request_body["max_tokens"] = payload.max_tokens
-    elif payload.model == DEFAULT_OPENROUTER_MODEL:
-        request_body["max_tokens"] = OPENROUTER_MAX_COMPLETION_TOKENS
-    response = await OPENROUTER_CLIENT.chat_completion(request_body)
-    if response.status_code >= 400:
-        raise HTTPException(
-            status_code=502,
-            detail=f"OpenRouter request failed with status {response.status_code}.",
+    retrieved: List[RetrievedMemory] = []
+    reply: str
+    if use_local_response:
+        local_payload = LocalResponseRequest(message=message)
+        reply = generate_local_response(local_payload).response
+    else:
+        short_term_rows = _fetch_conversation_rows(
+            user.user_id,
+            session_id=payload.session_id,
+            limit=8,
         )
-    data = response.json()
-    reply = (
-        data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-    )
-    if not reply:
-        raise HTTPException(status_code=502, detail="OpenRouter response was empty.")
+        short_term = [
+            record
+            for record in _rows_to_conversation_records(short_term_rows)
+            if record.message_id != stored_message.message_id
+        ]
+        retrieved = _retrieve_conversation_memories(user.user_id, message, payload.top_k)
+        system_prompt = "\n\n".join(
+            [
+                _format_persona_prompt(persona_state),
+                _format_memory_preamble(retrieved),
+                "Use the short-term session context to stay grounded in the recent dialogue.",
+            ]
+        )
+        messages = [{"role": "system", "content": system_prompt}]
+        for item in short_term:
+            messages.append({"role": item.role, "content": item.content})
+        messages.append({"role": "user", "content": message})
+        request_body: Dict[str, object] = {
+            "model": payload.model,
+            "messages": messages,
+            "temperature": payload.temperature,
+        }
+        if payload.max_tokens is not None:
+            request_body["max_tokens"] = payload.max_tokens
+        elif payload.model == DEFAULT_OPENROUTER_MODEL:
+            request_body["max_tokens"] = OPENROUTER_MAX_COMPLETION_TOKENS
+        response = await OPENROUTER_CLIENT.chat_completion(request_body)
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"OpenRouter request failed with status {response.status_code}.",
+            )
+        data = response.json()
+        reply = (
+            data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        )
+        if not reply:
+            raise HTTPException(status_code=502, detail="OpenRouter response was empty.")
     assistant_message = ConversationMessageCreateRequest(
         session_id=payload.session_id,
         role="assistant",
@@ -3507,6 +3789,7 @@ async def chat_llm(
         retrieved=retrieved,
         persona_state=persona_state,
         timestamp=datetime.now(timezone.utc),
+        used_local_response=use_local_response,
     )
 
 
@@ -3612,6 +3895,7 @@ def memory_export_json(
         emotion_baseline=persona_state.emotion_baseline,
         personality_traits=_current_personality_traits(user.user_id),
         emotion_transitions=list(persona_state.emotion_transitions),
+        local_state=persona_state.local_state,
         reflections=_fetch_reflections(user.user_id),
         routine_phase=persona_state.routine_phase,
         trait_history=_fetch_trait_history(user.user_id),
@@ -3631,6 +3915,7 @@ def memory_export_xml(
         persona_state.routine_phase,
         _current_personality_traits(user.user_id),
         persona_state.emotion_baseline,
+        persona_state.local_state,
         _fetch_reflections(user.user_id),
     )
     return Response(content=xml_payload, media_type="application/xml")
@@ -3683,6 +3968,7 @@ def memory_import_json(
         payload.emotion_transitions,
         payload.routine_phase,
         payload.personality_traits,
+        payload.local_state,
         payload.trait_history,
     )
     _log_memory_event(
@@ -3738,6 +4024,7 @@ def memory_import_xml(
         module_data.emotion_transitions,
         module_data.routine_phase,
         module_data.personality_traits,
+        module_data.local_state,
         [],
     )
     _log_memory_event(
