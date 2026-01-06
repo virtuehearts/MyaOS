@@ -74,6 +74,7 @@ CREATE TABLE persona_states (
     routine_phase VARCHAR(64) NOT NULL DEFAULT 'unspecified',
     emotion_transitions JSON NULL,
     personality_traits JSON NOT NULL,
+    local_state JSON NOT NULL,
     goals JSON NULL,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
