@@ -51,6 +51,26 @@ Backend:
 Frontend:
 - `NEXT_PUBLIC_API_BASE_URL` – API base URL (default `http://localhost:8000`).
 
+### Path to Production-Grade Authentication (JWT or Session Cookies)
+The current auth flow uses an HMAC-signed bearer token stored in `localStorage`. For a
+production rollout, plan on one of the following hardening paths:
+
+**Option A: JWT + refresh tokens**
+1. Replace the HMAC token with a signed JWT (e.g., RS256) that includes `sub` (user_id),
+   `sid` (session_id), and expiration.
+2. Issue short-lived access tokens and rotate refresh tokens stored in HttpOnly cookies.
+3. Add refresh endpoints (`POST /auth/refresh`) that verify refresh tokens and mint new access tokens.
+4. Rotate signing keys and revoke refresh tokens on logout.
+
+**Option B: Server-side sessions + cookies**
+1. Store session IDs in a database table keyed by user ID with expiry and revocation flags.
+2. Return a `Set-Cookie` header with a HttpOnly, Secure, SameSite cookie for the session ID.
+3. Update `_current_user` to read the session cookie instead of bearer headers.
+4. Add CSRF protections for mutating endpoints (double-submit or CSRF token).
+
+Both options keep the stable `user_id` as the primary tenant key for file storage,
+memory embeddings, persona state, and chat history.
+
 ## Core Principles
 - **Privacy-first companionship**: user context stays local by default, with clear control over what is retained.
 - **Deterministic local brain**: consistent, predictable behavior centered on stable values rather than shifting external feeds.

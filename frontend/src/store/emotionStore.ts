@@ -1,27 +1,25 @@
 'use client';
 
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
 
+import { userScopedStorage } from '@/store/userScopedStorage';
 interface EmotionStore {
   emotion: string;
   setEmotion: (emotion: string) => void;
+  resetEmotion: () => void;
 }
-
-const storage =
-  typeof window === 'undefined'
-    ? undefined
-    : createJSONStorage(() => window.localStorage);
 
 export const useEmotionStore = create<EmotionStore>()(
   persist(
     (set) => ({
       emotion: 'neutral',
-      setEmotion: (emotion) => set({ emotion })
+      setEmotion: (emotion) => set({ emotion }),
+      resetEmotion: () => set({ emotion: 'neutral' })
     }),
     {
       name: 'mya-emotion-store',
-      storage,
+      storage: userScopedStorage,
       partialize: (state) => ({ emotion: state.emotion })
     }
   )
