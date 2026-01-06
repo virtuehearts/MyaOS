@@ -751,9 +751,14 @@ def _current_user(request: Request) -> UserProfile:
     session_id = payload.get("session_id")
     if not isinstance(session_id, str):
         raise HTTPException(status_code=401, detail="Invalid auth token payload.")
+    user_id = payload.get("user_id")
+    if not isinstance(user_id, str):
+        raise HTTPException(status_code=401, detail="Invalid auth token payload.")
     session = SESSIONS.get(session_id)
     if not session:
         raise HTTPException(status_code=401, detail="Invalid auth session.")
+    if session.user_id != user_id:
+        raise HTTPException(status_code=401, detail="Invalid auth session user.")
     if session.expires_at < datetime.now(timezone.utc):
         SESSIONS.pop(session_id, None)
         raise HTTPException(status_code=401, detail="Auth session expired.")

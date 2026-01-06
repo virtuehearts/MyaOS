@@ -6,7 +6,7 @@ import { OsShell } from '@/components/os/OsShell';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { useAuthStore } from '@/store/authStore';
+import { createLocalUserId, useAuthStore } from '@/store/authStore';
 
 const BOOT_DURATION_MS = 2400;
 
@@ -59,8 +59,9 @@ export function BootSequence() {
 
     setLoginError('');
     const displayName = trimmedName || 'Operator';
+    const userId = createLocalUserId(displayName);
     setUser({
-      user_id: 'local-user',
+      user_id: userId,
       email: `${displayName.toLowerCase().replace(/\s+/g, '.')}@myaos.local`,
       name: displayName,
       created_at: new Date().toISOString()

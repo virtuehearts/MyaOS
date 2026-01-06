@@ -1,8 +1,9 @@
 'use client';
 
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
+import { persist } from 'zustand/middleware';
 
+import { userScopedStorage } from '@/store/userScopedStorage';
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -42,6 +43,7 @@ interface ChatStore {
   archiveSession: (id: string, archived: boolean) => void;
   deleteSession: (id: string) => void;
   markChatClosed: () => void;
+  resetForUser: () => void;
   addMessage: (message: ChatMessage) => void;
   clearMessages: () => void;
   setMemory: (entries: MemoryEntry[]) => void;
@@ -54,11 +56,6 @@ interface ChatStore {
   setPersona: (persona: string) => void;
   setUsePersona: (value: boolean) => void;
 }
-
-const storage =
-  typeof window === 'undefined'
-    ? undefined
-    : createJSONStorage(() => window.localStorage);
 
 const makeId = () =>
   typeof crypto !== 'undefined' ? crypto.randomUUID() : `${Date.now()}`;
@@ -78,20 +75,25 @@ const createSessionTemplate = (name: string) => {
 const ensureUniqueName = (sessions: ChatSession[]) =>
   `Chat ${sessions.length + 1}`;
 
-const initialSession = createSessionTemplate('Chat 1');
+const createInitialState = () => {
+  const initialSession = createSessionTemplate('Chat 1');
+  return {
+    sessions: [initialSession],
+    activeSessionId: initialSession.id,
+    shouldStartNewSessionOnOpen: false,
+    memory: [],
+    model: 'nvidia/nemotron-nano-12b-v2-vl:free',
+    temperature: 0.7,
+    useMemory: true,
+    persona: '',
+    usePersona: false
+  };
+};
 
 export const useChatStore = create<ChatStore>()(
   persist(
     (set) => ({
-      sessions: [initialSession],
-      activeSessionId: initialSession.id,
-      shouldStartNewSessionOnOpen: false,
-      memory: [],
-      model: 'nvidia/nemotron-nano-12b-v2-vl:free',
-      temperature: 0.7,
-      useMemory: true,
-      persona: '',
-      usePersona: false,
+      ...createInitialState(),
       ensureActiveSession: () =>
         set((state) => {
           if (state.sessions.length === 0 || state.shouldStartNewSessionOnOpen) {
@@ -169,6 +171,7 @@ export const useChatStore = create<ChatStore>()(
           };
         }),
       markChatClosed: () => set({ shouldStartNewSessionOnOpen: true }),
+      resetForUser: () => set(createInitialState()),
       addMessage: (message) =>
         set((state) => ({
           sessions: state.sessions.map((session) =>
@@ -208,7 +211,7 @@ export const useChatStore = create<ChatStore>()(
     }),
     {
       name: 'mya-chat-store',
-      storage,
+      storage: userScopedStorage,
       version: 1,
       migrate: (persistedState, version) => {
         if (version === 0 && persistedState && typeof persistedState === 'object') {
@@ -221,6 +224,7 @@ export const useChatStore = create<ChatStore>()(
             persona?: string;
             usePersona?: boolean;
           };
+          const defaults = createInitialState();
           const legacyMessages = legacyState.messages ?? [];
           const now = Date.now();
           const createdAt = legacyMessages[0]?.createdAt ?? now;
@@ -239,11 +243,11 @@ export const useChatStore = create<ChatStore>()(
             activeSessionId: session.id,
             shouldStartNewSessionOnOpen: false,
             memory: legacyState.memory ?? [],
-            model: legacyState.model ?? 'nvidia/nemotron-nano-12b-v2-vl:free',
-            temperature: legacyState.temperature ?? 0.7,
-            useMemory: legacyState.useMemory ?? true,
-            persona: legacyState.persona ?? '',
-            usePersona: legacyState.usePersona ?? false
+            model: legacyState.model ?? defaults.model,
+            temperature: legacyState.temperature ?? defaults.temperature,
+            useMemory: legacyState.useMemory ?? defaults.useMemory,
+            persona: legacyState.persona ?? defaults.persona,
+            usePersona: legacyState.usePersona ?? defaults.usePersona
           };
         }
         return persistedState as ChatStore;

@@ -10,6 +10,7 @@ import { Taskbar } from '@/components/os/Taskbar';
 import { apiRequest } from '@/lib/api';
 import { AuthUser, useAuthStore } from '@/store/authStore';
 import { useChatStore } from '@/store/chatStore';
+import { useEmotionStore } from '@/store/emotionStore';
 import { useOsStore, type WindowId } from '@/store/osStore';
 
 export function OsShell() {
@@ -28,6 +29,7 @@ export function OsShell() {
   const [desktopBackground, setDesktopBackground] = useState<string | null>(null);
   const { token, user, setUser, clearSession, status, setStatus } = useAuthStore();
   const startButtonRef = useRef<HTMLButtonElement>(null);
+  const userId = user?.user_id ?? null;
 
   useEffect(() => {
     if (!token || user) {
@@ -54,6 +56,13 @@ export function OsShell() {
       isMounted = false;
     };
   }, [token, user, setUser, clearSession, setStatus]);
+
+  useEffect(() => {
+    useChatStore.getState().resetForUser();
+    useEmotionStore.getState().resetEmotion();
+    useChatStore.persist.rehydrate();
+    useEmotionStore.persist.rehydrate();
+  }, [userId]);
 
   useEffect(() => {
     return () => {
